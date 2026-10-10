@@ -448,6 +448,9 @@ pub struct DownloadItem {
     pub note: Option<String>,
     #[serde(default)]
     pub file_path: Option<PathBuf>,
+    /// Partial files of an unfinished download (deleted by "Remove and Delete Partial Download").
+    #[serde(default)]
+    pub temp_files: Vec<PathBuf>,
     #[serde(default)]
     pub file_size: Option<u64>,
     #[serde(default)]
@@ -483,6 +486,7 @@ impl DownloadItem {
             error: None,
             note: None,
             file_path: None,
+            temp_files: Vec::new(),
             file_size: None,
             ext: None,
             height: None,
@@ -509,6 +513,7 @@ impl DownloadItem {
                 options: self.options.clone()?,
                 output_dir: self.output_dir.clone(),
                 file_prefix: self.file_prefix.clone(),
+                work_key: format!("{}-{}", self.id, self.created_at.timestamp_millis()),
             }),
             ItemKind::Conversion => JobSpec::Convert(self.convert.clone()?),
             ItemKind::Group => return None,

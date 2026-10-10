@@ -269,6 +269,16 @@ impl OdlApp {
                 let name = self.items.get(*id).map(|i| i.title.clone()).unwrap_or_default();
                 ("Delete file?", format!("“{name}” will be deleted from disk and removed from the list."), "Delete")
             }
+            Confirm::DeletePartial(id) => {
+                let name = self.items.get(*id).map(|i| i.title.clone()).unwrap_or_default();
+                let size = self.partial_size(*id);
+                let amount = if size > 0 { format!("the {} downloaded so far", format_bytes(size)) } else { "its partial files".into() };
+                (
+                    "Delete partial download?",
+                    format!("“{name}” is stopped, removed from the list, and {amount} is deleted. It can't be resumed afterwards."),
+                    "Delete",
+                )
+            }
             Confirm::ClearList => (
                 "Clear the list?",
                 "All items are removed from the list. Downloaded files stay on disk; running downloads are stopped."
@@ -308,6 +318,7 @@ impl OdlApp {
         }
         match confirm {
             Some(Confirm::DeleteFile(id)) => self.delete_file(id),
+            Some(Confirm::DeletePartial(id)) => self.delete_partial(id),
             Some(Confirm::ClearList) => self.clear_list(),
             Some(Confirm::Quit) => self.quit(ctx),
             None => {}

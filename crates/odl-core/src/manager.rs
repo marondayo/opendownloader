@@ -16,6 +16,19 @@ pub struct DownloadJob {
     pub options: DownloadOptions,
     pub output_dir: PathBuf,
     pub file_prefix: Option<String>,
+    /// Unique, stable per download item; names its private working folder.
+    pub work_key: String,
+}
+
+impl DownloadJob {
+    /// Private working folder (inside the output folder, so the final move is a rename).
+    ///
+    /// yt-dlp treats any existing file with the target name as "already downloaded", and
+    /// audio extraction then deletes it as an intermediate file. Downloading in an isolated
+    /// folder means existing files are never reused, converted or deleted.
+    pub fn work_dir(&self) -> PathBuf {
+        self.output_dir.join(format!(".odl-partial-{}", self.work_key))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +57,8 @@ pub struct JobOutcome {
 pub enum EngineEvent {
     Started(ItemId),
     Progress(ItemId, Progress),
+    /// A (possibly partial) file the job is writing; used to clean up cancelled downloads.
+    TempFile(ItemId, PathBuf),
     Finished(ItemId, JobOutcome),
     Failed(ItemId, String),
     /// Cancelled by the user (item is paused and can be resumed).
@@ -149,7 +164,11 @@ async fn run_job(
     let progress_sink = sink.clone();
     let on_progress = move |p: Progress| progress_sink(EngineEvent::Progress(id, p));
     let result = match &job.spec {
-        JobSpec::Download(d) => crate::ytdlp::download(&ctx, d, token, &on_progress).await,
+        JobSpec::Download(d) => {
+            let file_sink = sink.clone();
+            let on_file = move |p: PathBuf| file_sink(EngineEvent::TempFile(id, p));
+            crate::ytdlp::download(&ctx, d, token, &on_progress, &on_file).await
+        }
         JobSpec::Convert(c) => crate::convert::convert(&ctx, c, token, &on_progress).await,
     };
     match result {
@@ -183,6 +202,7 @@ mod tests {
                     options: DownloadOptions::default(),
                     output_dir: tmp.clone(),
                     file_prefix: None,
+                    work_key: format!("test-{id}"),
                 }),
             });
         }

@@ -107,6 +107,7 @@ pub struct ToolState {
 
 pub enum Confirm {
     DeleteFile(ItemId),
+    DeletePartial(ItemId),
     ClearList,
     Quit,
 }
@@ -130,6 +131,7 @@ pub enum Action {
     Resume(ItemId),
     Remove(ItemId),
     AskDeleteFile(ItemId),
+    AskDeletePartial(ItemId),
     OpenFile(ItemId),
     ShowInFolder(ItemId),
     CopyLink(ItemId),
@@ -176,6 +178,8 @@ pub struct OdlApp {
     pub bili: BiliLogin,
     bili_cancel: Option<CancellationToken>,
     pub cookie_checks: HashMap<Site, Result<auth::CookieCheck, String>>,
+    /// Removed downloads whose partial files are deleted once their process exits.
+    pending_purge: HashMap<ItemId, Vec<PathBuf>>,
     pub cred_inputs: HashMap<Site, (String, String)>,
     quitting: bool,
 }
@@ -237,6 +241,7 @@ impl OdlApp {
             bili: BiliLogin::Idle,
             bili_cancel: None,
             cookie_checks: HashMap::new(),
+            pending_purge: HashMap::new(),
             cred_inputs: HashMap::new(),
             quitting: false,
         };
@@ -446,9 +451,35 @@ impl OdlApp {
             | EngineEvent::Finished(id, _)
             | EngineEvent::Failed(id, _)
             | EngineEvent::Cancelled(id) => *id,
+            EngineEvent::TempFile(id, path) => {
+                let list = match self.pending_purge.get_mut(id) {
+                    Some(list) => list,
+                    None => match self.items.get_mut(*id) {
+                        Some(item) => &mut item.temp_files,
+                        None => return,
+                    },
+                };
+                if !list.contains(path) {
+                    list.push(path.clone());
+                    self.history_dirty = true;
+                }
+                return;
+            }
         };
+        // A download the user removed with "delete partial download": once it has stopped,
+        // delete everything it wrote.
+        if matches!(ev, EngineEvent::Finished(..) | EngineEvent::Failed(..) | EngineEvent::Cancelled(_)) {
+            if let Some(mut files) = self.pending_purge.remove(&id) {
+                if let EngineEvent::Finished(_, o) = &ev {
+                    files.extend(o.file.clone());
+                }
+                self.finish_purge(&files);
+                return;
+            }
+        }
         let Some(item) = self.items.get_mut(id) else { return };
         match ev {
+            EngineEvent::TempFile(..) => {}
             EngineEvent::Started(_) => {
                 item.status = ItemStatus::Running;
                 item.error = None;
@@ -463,6 +494,7 @@ impl OdlApp {
                 item.progress.fraction = Some(1.0);
                 item.progress.stage = None;
                 item.file_path = o.file;
+                item.temp_files.clear();
                 item.file_size = o.size;
                 item.ext = o.ext;
                 item.height = o.height;
@@ -777,6 +809,48 @@ impl OdlApp {
         self.history_dirty = true;
     }
 
+    /// Bytes of partial data on disk for an item (or a group's unfinished children).
+    pub fn partial_size(&self, id: ItemId) -> u64 {
+        self.runnable_ids(id)
+            .iter()
+            .filter_map(|c| self.items.get(*c))
+            .filter(|i| i.status != ItemStatus::Completed)
+            .flat_map(|i| i.temp_files.iter())
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum()
+    }
+
+    /// Stops an unfinished download, removes it from the list and deletes its partial files.
+    /// Finished items in a playlist keep their files.
+    pub fn delete_partial(&mut self, id: ItemId) {
+        let mut now = Vec::new();
+        for cid in self.runnable_ids(id) {
+            let Some(item) = self.items.get(cid) else { continue };
+            match item.status {
+                ItemStatus::Completed => {}
+                ItemStatus::Running => {
+                    // Files are still open; delete them when the process has exited.
+                    self.pending_purge.insert(cid, item.temp_files.clone());
+                    self.manager.cancel(cid);
+                }
+                _ => now.extend(item.temp_files.iter().cloned()),
+            }
+        }
+        self.remove(id);
+        self.finish_purge(&now);
+    }
+
+    fn finish_purge(&mut self, files: &[PathBuf]) {
+        if files.is_empty() {
+            return;
+        }
+        let (count, bytes) = ytdlp::delete_partial_files(files);
+        if count > 0 {
+            self.toast(ToastKind::Info, format!("Deleted partial download ({})", format_bytes(bytes)));
+        }
+    }
+
     pub fn delete_file(&mut self, id: ItemId) {
         let paths: Vec<PathBuf> =
             self.runnable_ids(id).iter().filter_map(|c| self.items.get(*c)).filter_map(|i| i.file_path.clone()).collect();
@@ -837,6 +911,7 @@ impl OdlApp {
                 Action::Resume(id) => self.resume(id),
                 Action::Remove(id) => self.remove(id),
                 Action::AskDeleteFile(id) => self.confirm = Some(Confirm::DeleteFile(id)),
+                Action::AskDeletePartial(id) => self.confirm = Some(Confirm::DeletePartial(id)),
                 Action::OpenFile(id) => {
                     if let Some(p) = self.items.get(id).and_then(|i| i.file_path.clone()) {
                         if p.exists() {

@@ -453,6 +453,16 @@ impl OdlApp {
         }
         ui.separator();
         act(ui, actions, "Remove from List", Some("Del"), Action::Remove(id));
+        let unfinished = if is_group {
+            let s = self.items.summary(id);
+            s.completed < s.total
+        } else {
+            item.kind == ItemKind::Media && item.status != ItemStatus::Completed
+        };
+        if unfinished {
+            let label = if is_group { "Remove and Delete Partial Downloads…" } else { "Remove and Delete Partial Download…" };
+            act(ui, actions, label, None, Action::AskDeletePartial(id));
+        }
         if has_file && !is_group {
             act(ui, actions, "Delete File…", None, Action::AskDeleteFile(id));
         }

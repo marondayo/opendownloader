@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
                     options,
                     output_dir: dir,
                     file_prefix: None,
+                    work_key: "cli".into(),
                 }),
             });
             while let Some(ev) = rx.recv().await {

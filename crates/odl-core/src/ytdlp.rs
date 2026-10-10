@@ -20,6 +20,8 @@ const PROGRESS_TAG: &str = "[odl] ";
 const POST_TAG: &str = "[odlpp] ";
 const SIZE_TAG: &str = "[odlsize] ";
 const FILE_TAG: &str = "[odlfile] ";
+/// Separates file paths in progress lines (ASCII unit separator, never in file names).
+const PATH_SEP: char = '\u{1f}';
 
 static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -264,7 +266,7 @@ pub fn download_args(settings: &Settings, job: &DownloadJob) -> Vec<String> {
 
     push(&["--newline", "--progress", "--no-simulate", "--no-playlist", "--no-mtime"]);
     push(&["--progress-template", &format!(
-        "download:{PROGRESS_TAG}%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(info.format_id)s"
+        "download:{PROGRESS_TAG}%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(info.format_id)s|%(progress.tmpfilename)s{PATH_SEP}%(progress.filename)s"
     )]);
     push(&["--progress-template", &format!("postprocess:{POST_TAG}%(progress.status)s|%(progress.postprocessor)s")]);
     push(&["--print", &format!("video:{SIZE_TAG}%(filesize,filesize_approx)s")]);
@@ -358,7 +360,7 @@ pub fn download_args(settings: &Settings, job: &DownloadJob) -> Vec<String> {
         Some(prefix) => format!("{}{template}", prefix.replace('%', "%%")),
         None => template,
     };
-    push(&["-P", &job.output_dir.to_string_lossy(), "-o", &template]);
+    push(&["-P", &job.work_dir().to_string_lossy(), "-o", &template]);
 
     a.extend(split_args(&settings.extra_ytdlp_args));
     a
@@ -407,6 +409,8 @@ pub struct RawProgress {
     pub fragment_index: Option<u64>,
     pub fragment_count: Option<u64>,
     pub format_id: String,
+    /// Files yt-dlp is writing for this stream (`….part` and the stream's own file).
+    pub files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -438,9 +442,15 @@ fn na<T: std::str::FromStr>(s: &str) -> Option<T> {
 
 pub fn parse_line(line: &str) -> OutLine {
     if let Some(rest) = line.strip_prefix(PROGRESS_TAG) {
-        let f: Vec<&str> = rest.splitn(9, '|').collect();
-        if f.len() == 9 {
+        // Paths come last (they may contain '|') and are separated by PATH_SEP.
+        let f: Vec<&str> = rest.splitn(10, '|').collect();
+        if f.len() >= 9 {
+            let files = f
+                .get(9)
+                .map(|p| p.split(PATH_SEP).filter(|s| !s.is_empty() && *s != "NA").map(PathBuf::from).collect())
+                .unwrap_or_default();
             return OutLine::Progress(RawProgress {
+                files,
                 status: f[0].to_string(),
                 downloaded: na(f[1]),
                 total: na(f[2]),
@@ -640,11 +650,97 @@ async fn prepare_bilibili(ctx: &RunCtx, job: &DownloadJob, auth: &AuthArgs) -> a
     Ok(TempFile(path))
 }
 
+/// `dir/name`, or `dir/stem (1).ext`, `dir/stem (2).ext`, … if that's taken.
+pub fn unique_path(dir: &std::path::Path, file_name: &std::ffi::OsStr) -> PathBuf {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let p = std::path::Path::new(file_name);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|c| !c.exists())
+        .expect("unbounded range")
+}
+
+/// Moves a finished file into `dest_dir` under a free name; returns the new path.
+fn move_out(path: &std::path::Path, dest_dir: &std::path::Path) -> std::io::Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| std::io::Error::other("file has no name"))?;
+    let dest = unique_path(dest_dir, name);
+    if std::fs::rename(path, &dest).is_err() {
+        std::fs::copy(path, &dest)?;
+        std::fs::remove_file(path)?;
+    }
+    Ok(dest)
+}
+
+/// Moves leftover finished files out of a working folder and removes it.
+fn finish_work_dir(work: &std::path::Path, dest_dir: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(work) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let partial = name.ends_with(".part") || name.ends_with(".ytdl") || name.contains(".part-Frag");
+            if e.path().is_file() && !partial {
+                let _ = move_out(&e.path(), dest_dir);
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(work);
+}
+
+/// Deletes the partial files of an unfinished download: the given paths plus yt-dlp's
+/// `.ytdl` resume state and `-FragN` fragment files. Returns (files deleted, bytes freed).
+pub fn delete_partial_files(paths: &[PathBuf]) -> (usize, u64) {
+    let mut doomed: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        doomed.push(p.clone());
+        let mut ytdl = p.clone().into_os_string();
+        ytdl.push(".ytdl");
+        doomed.push(ytdl.into());
+        if let (Some(dir), Some(name)) = (p.parent(), p.file_name().map(|n| n.to_string_lossy().into_owned())) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                let frag_prefix = format!("{name}-Frag");
+                for e in entries.flatten() {
+                    if e.file_name().to_string_lossy().starts_with(&frag_prefix) {
+                        doomed.push(e.path());
+                    }
+                }
+            }
+        }
+    }
+    doomed.sort();
+    doomed.dedup();
+    let (mut count, mut bytes) = (0, 0);
+    for p in &doomed {
+        if let Ok(meta) = std::fs::metadata(p) {
+            if meta.is_file() && std::fs::remove_file(p).is_ok() {
+                count += 1;
+                bytes += meta.len();
+            }
+        }
+    }
+    // The private working folder holds only this download's files (thumbnails, subtitles…).
+    let mut work_dirs: Vec<&std::path::Path> = paths
+        .iter()
+        .filter_map(|p| p.parent())
+        .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".odl-partial-")))
+        .collect();
+    work_dirs.dedup();
+    for d in work_dirs {
+        let _ = std::fs::remove_dir_all(d);
+    }
+    (count, bytes)
+}
+
+/// Runs one download. `on_file` reports every file yt-dlp starts writing (for cleanup).
 pub async fn download(
     ctx: &RunCtx,
     job: &DownloadJob,
     cancel: CancellationToken,
     on_progress: &(dyn Fn(Progress) + Send + Sync),
+    on_file: &(dyn Fn(PathBuf) + Send + Sync),
 ) -> Result<JobOutcome, JobError> {
     tokio::fs::create_dir_all(&job.output_dir)
         .await
@@ -699,6 +795,7 @@ pub async fn download(
     let mut last = Progress::default();
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     let mut already_downloaded = false;
+    let mut seen_files: Vec<PathBuf> = Vec::new();
 
     loop {
         tokio::select! {
@@ -711,6 +808,12 @@ pub async fn download(
                 let line = strip_ansi(&line);
                 match parse_line(&line) {
                     OutLine::Progress(p) => {
+                        for f in &p.files {
+                            if !seen_files.contains(f) {
+                                seen_files.push(f.clone());
+                                on_file(f.clone());
+                            }
+                        }
                         let finished = p.status == "finished";
                         last = tracker.update(&p);
                         if finished || last_emit.elapsed() >= Duration::from_millis(250) {
@@ -759,8 +862,18 @@ pub async fn download(
     if stderr_lines.iter().any(|l| l.contains("has already been recorded in the archive")) {
         already_downloaded = true;
     }
-    let size = match &file {
-        Some(f) => tokio::fs::metadata(&f.path).await.ok().map(|m| m.len()),
+    // Move the result (and any side files such as unembedded subtitles) out of the
+    // private working folder, never overwriting an existing file.
+    let final_path = match &file {
+        Some(f) => Some(
+            move_out(&f.path, &job.output_dir)
+                .map_err(|e| JobError::Failed(format!("could not move the finished file: {e}")))?,
+        ),
+        None => None,
+    };
+    finish_work_dir(&job.work_dir(), &job.output_dir);
+    let size = match &final_path {
+        Some(p) => tokio::fs::metadata(p).await.ok().map(|m| m.len()),
         None => None,
     };
     Ok(JobOutcome {
@@ -770,10 +883,9 @@ pub async fn download(
         fps: file.as_ref().and_then(|f| f.fps),
         note: match (&file, already_downloaded) {
             (None, true) => Some("Already downloaded earlier (skipped)".into()),
-            (Some(_), true) => Some("Already downloaded".into()),
             _ => None,
         },
-        file: file.map(|f| f.path),
+        file: final_path,
     })
 }
 
@@ -789,6 +901,7 @@ mod tests {
             options,
             output_dir: PathBuf::from("/tmp/out"),
             file_prefix: Some("03. ".into()),
+            work_key: "7-1".into(),
         }
     }
 
@@ -804,7 +917,7 @@ mod tests {
         assert!(has_pair(&a, "-S", "res:720,vcodec:h264,acodec:aac"));
         assert!(has_pair(&a, "--merge-output-format", "mp4"));
         assert!(has_pair(&a, "-o", "03. %(title).200B.%(ext)s"));
-        assert!(has_pair(&a, "-P", "/tmp/out"));
+        assert!(has_pair(&a, "-P", &PathBuf::from("/tmp/out").join(".odl-partial-7-1").to_string_lossy()));
         assert!(a.contains(&"--embed-thumbnail".to_string()));
         assert!(!a.contains(&"--write-subs".to_string()));
     }
@@ -881,6 +994,12 @@ mod tests {
         assert_eq!(p.speed, Some(524_288.5));
         assert_eq!(p.eta, Some(17));
         assert_eq!(p.format_id, "137");
+        assert!(p.files.is_empty());
+
+        let l = parse_line("[odl] downloading|1|2|NA|NA|NA|NA|NA|30080|/d/A | B.f30080.mp4.part\u{1f}/d/A | B.f30080.mp4");
+        let OutLine::Progress(p) = l else { panic!("{l:?}") };
+        assert_eq!(p.format_id, "30080");
+        assert_eq!(p.files, vec![PathBuf::from("/d/A | B.f30080.mp4.part"), PathBuf::from("/d/A | B.f30080.mp4")]);
 
         assert_eq!(
             parse_line("[odlpp] started|Merger"),
@@ -909,6 +1028,7 @@ mod tests {
             fragment_index: None,
             fragment_count: None,
             format_id: fid.into(),
+            files: vec![],
         };
         let p = t.update(&mk("downloading", 50, 100, "137"));
         assert_eq!((p.downloaded, p.total), (50, Some(110)));
@@ -966,6 +1086,38 @@ mod tests {
         assert_eq!(p.entries[1].url, "https://www.youtube.com/watch?v=a2");
         assert_eq!(p.entries[1].index, 2);
         assert_eq!(p.entries[0].duration, Some(251.0));
+    }
+
+    #[test]
+    fn deletes_partial_files_only() {
+        let dir = std::env::temp_dir().join(format!("odl-partial-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("Video.f137.mp4.part");
+        for name in ["Video.f137.mp4.part", "Video.f137.mp4.part.ytdl", "Video.f137.mp4.part-Frag3", "Other.mp4"] {
+            std::fs::write(dir.join(name), b"1234").unwrap();
+        }
+        let (n, bytes) = delete_partial_files(&[part, dir.join("Video.f137.mp4")]);
+        assert_eq!((n, bytes), (3, 12));
+        assert!(dir.join("Other.mp4").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finished_files_never_overwrite() {
+        let base = std::env::temp_dir().join(format!("odl-move-test-{}", std::process::id()));
+        let work = base.join(".odl-partial-1-1");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(base.join("Song.mp4"), b"video").unwrap();
+        std::fs::write(work.join("Song.mp4"), b"audio").unwrap();
+        std::fs::write(work.join("Song.en.vtt"), b"subs").unwrap();
+        std::fs::write(work.join("Song.f1.mp4.part"), b"x").unwrap();
+        let moved = move_out(&work.join("Song.mp4"), &base).unwrap();
+        assert_eq!(moved, base.join("Song (1).mp4"));
+        assert_eq!(std::fs::read(base.join("Song.mp4")).unwrap(), b"video");
+        finish_work_dir(&work, &base);
+        assert!(base.join("Song.en.vtt").exists());
+        assert!(!work.exists());
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
