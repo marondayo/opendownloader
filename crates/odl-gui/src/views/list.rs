@@ -28,6 +28,11 @@ impl OdlApp {
             self.ui_tabs(ui);
         }
 
+        if self.group_view.is_none() && self.tab == Tab::Subscriptions {
+            self.ui_subscriptions(ui);
+            return;
+        }
+
         let ids = self.visible_ids();
         if ids.is_empty() {
             self.ui_empty(ui);
@@ -66,6 +71,7 @@ impl OdlApp {
                 Tab::Audio => i.is_audio(),
                 Tab::Playlists => i.kind == ItemKind::Group,
                 Tab::Converted => i.kind == ItemKind::Conversion,
+                Tab::Subscriptions => false,
             })
             .filter(|i| matches(i))
             .map(|i| i.id)

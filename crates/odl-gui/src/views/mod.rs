@@ -4,6 +4,7 @@ pub mod add;
 pub mod convert;
 pub mod list;
 pub mod settings;
+pub mod subs;
 
 use crate::app::{Action, Confirm, OdlApp, ToastKind};
 use crate::theme::*;

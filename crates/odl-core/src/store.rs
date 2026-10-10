@@ -57,6 +57,14 @@ pub fn save_history(items: &[DownloadItem]) -> anyhow::Result<()> {
     save_json(&crate::paths::get().history_file(), items)
 }
 
+pub fn load_subscriptions() -> Vec<crate::model::Subscription> {
+    load_json(&crate::paths::get().data.join("subscriptions.json"))
+}
+
+pub fn save_subscriptions(subs: &[crate::model::Subscription]) -> anyhow::Result<()> {
+    save_json(&crate::paths::get().data.join("subscriptions.json"), subs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

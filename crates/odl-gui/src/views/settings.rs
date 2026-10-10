@@ -265,6 +265,20 @@ impl OdlApp {
             |ui| toggle(ui, &mut s.use_download_archive).changed(),
         );
 
+        section_title(ui, "Subscriptions");
+        let label = |h: u32| match h {
+            0 => "Never (only when I click Check)".to_string(),
+            1 => "Every hour".to_string(),
+            h => format!("Every {h} hours"),
+        };
+        setting_row(ui, "Check subscriptions for new videos", None, |ui| {
+            egui::ComboBox::from_id_salt("sub-interval").selected_text(label(s.subscription_check_hours)).width(220.0).show_ui(ui, |ui| {
+                for h in [0, 1, 3, 6, 12, 24] {
+                    changed |= ui.selectable_value(&mut s.subscription_check_hours, h, label(h)).changed();
+                }
+            });
+        });
+
         section_title(ui, "Files");
         changed |= setting_row(ui, "Embed thumbnail / cover art", None, |ui| toggle(ui, &mut s.embed_thumbnail).changed());
         changed |= setting_row(ui, "Embed metadata (title, artist, date…)", None, |ui| toggle(ui, &mut s.embed_metadata).changed());

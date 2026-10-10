@@ -11,6 +11,8 @@ use std::time::Instant;
 pub enum Preselect {
     All,
     Only(String),
+    /// Nothing ticked and "Subscribe" on ("Subscribe to the Playlist").
+    Subscribe,
 }
 
 pub enum AddFlow {
@@ -27,6 +29,8 @@ pub struct AddDialog {
     pub opts: DownloadOptions,
     pub checked: Vec<bool>,
     pub filter: String,
+    /// Also subscribe to the playlist (download new entries automatically).
+    pub subscribe: bool,
 }
 
 impl AddDialog {
@@ -50,11 +54,13 @@ impl AddDialog {
                 .map(|e| match &preselect {
                     Preselect::All => true,
                     Preselect::Only(id) => &e.id == id,
+                    Preselect::Subscribe => false,
                 })
                 .collect(),
             ProbeResult::Single(_) => Vec::new(),
         };
-        Self { link, probe, opts, checked, filter: String::new() }
+        let subscribe = preselect == Preselect::Subscribe;
+        Self { link, probe, opts, checked, filter: String::new(), subscribe }
     }
 
     fn selected_count(&self) -> usize {
@@ -139,8 +145,13 @@ impl OdlApp {
                     }
                     self.settings.last_options = remembered;
                     self.settings_changed();
+                    if let (true, ProbeResult::Playlist(pl)) = (dlg.subscribe, &dlg.probe) {
+                        self.subscribe(&dlg.link, pl, dlg.opts.clone());
+                    }
                     let selected = matches!(dlg.probe, ProbeResult::Playlist(_)).then_some(dlg.checked.as_slice());
-                    self.start_from_probe(&dlg.probe, Some(dlg.link.site), selected, dlg.opts.clone());
+                    if selected.is_none_or(|s| s.iter().any(|c| *c)) {
+                        self.start_from_probe(&dlg.probe, Some(dlg.link.site), selected, dlg.opts.clone());
+                    }
                     None
                 }
             },
@@ -166,6 +177,12 @@ impl OdlApp {
             {
                 choice = Some(2);
             }
+            ui.add_space(6.0);
+            if choice_button(ui, "🔔", "Subscribe to the Playlist", "Download future videos automatically. Saving current ones is optional.")
+                .clicked()
+            {
+                choice = Some(3);
+            }
             ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Cancel").clicked() {
@@ -188,9 +205,14 @@ impl OdlApp {
                 self.probe(link, url, false, Preselect::All, false);
                 self.add.take()
             }
-            Some(_) => {
+            Some(2) => {
                 let url = link.playlist_url();
                 self.probe(link, url, false, Preselect::Only(video_id), false);
+                self.add.take()
+            }
+            Some(_) => {
+                let url = link.playlist_url();
+                self.probe(link, url, false, Preselect::Subscribe, false);
                 self.add.take()
             }
             None if cancel || modal.should_close() => None,
@@ -221,16 +243,22 @@ impl OdlApp {
                 if let Some(e) = estimate {
                     ui.label(RichText::new(e).color(TEXT_DIM));
                 }
+                let is_playlist = matches!(dlg.probe, ProbeResult::Playlist(_));
+                if is_playlist {
+                    ui.checkbox(&mut dlg.subscribe, "🔔 Subscribe")
+                        .on_hover_text("Check this playlist regularly and download new videos automatically (Subscriptions tab).");
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let n = dlg.selected_count();
                     let label = match &dlg.probe {
                         ProbeResult::Single(_) => "Download".to_string(),
+                        ProbeResult::Playlist(_) if n == 0 && dlg.subscribe => "Subscribe".to_string(),
                         ProbeResult::Playlist(_) => {
-                            let n = dlg.selected_count();
                             let noun = if dlg.opts.media == MediaKind::Audio { "Track" } else { "Video" };
                             format!("Download {n} {noun}{}", if n == 1 { "" } else { "s" })
                         }
                     };
-                    let enabled = !matches!(dlg.probe, ProbeResult::Playlist(_)) || dlg.selected_count() > 0;
+                    let enabled = !is_playlist || n > 0 || dlg.subscribe;
                     if ui.add_enabled(enabled, primary_button(&label).min_size(vec2(180.0, 38.0))).clicked() {
                         outcome = DialogOutcome::Download;
                     }

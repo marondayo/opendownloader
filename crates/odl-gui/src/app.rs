@@ -33,6 +33,7 @@ pub enum UiMsg {
     Bili(BiliMsg),
     /// A supported link was copied somewhere on the desktop.
     ClipboardLink(String),
+    SubChecked { id: u64, result: Result<ProbeResult, String> },
 }
 
 pub enum BiliMsg {
@@ -73,10 +74,11 @@ pub enum Tab {
     Audio,
     Playlists,
     Converted,
+    Subscriptions,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::All, Tab::Video, Tab::Audio, Tab::Playlists, Tab::Converted];
+    pub const ALL: [Tab; 6] = [Tab::All, Tab::Video, Tab::Audio, Tab::Playlists, Tab::Converted, Tab::Subscriptions];
     pub fn label(self) -> &'static str {
         match self {
             Tab::All => "All",
@@ -84,6 +86,7 @@ impl Tab {
             Tab::Audio => "Audio",
             Tab::Playlists => "Playlists",
             Tab::Converted => "Converted",
+            Tab::Subscriptions => "Subscriptions",
         }
     }
 }
@@ -194,6 +197,12 @@ pub struct OdlApp {
     pub clip_offer: Option<ClipOffer>,
     /// Last text the app itself put on the clipboard (not offered back).
     pub last_self_copy: Option<String>,
+
+    pub subs: Vec<Subscription>,
+    subs_dirty: bool,
+    sub_queue: std::collections::VecDeque<u64>,
+    pub sub_checking: Option<u64>,
+    last_sub_tick: Instant,
     pub cred_inputs: HashMap<Site, (String, String)>,
     quitting: bool,
 }
@@ -261,6 +270,12 @@ impl OdlApp {
             clipboard_enabled,
             clip_offer: None,
             last_self_copy: None,
+            subs: store::load_subscriptions(),
+            subs_dirty: false,
+            sub_queue: Default::default(),
+            sub_checking: None,
+            // First automatic check ~15 s after start.
+            last_sub_tick: Instant::now() - Duration::from_secs(45),
             cred_inputs: HashMap::new(),
             quitting: false,
         };
@@ -325,6 +340,7 @@ impl OdlApp {
             let ttl = if t.kind == ToastKind::Error { 9 } else { 5 };
             now.duration_since(t.created) < Duration::from_secs(ttl)
         });
+        self.tick_subscriptions();
         self.autosave(false);
     }
 
@@ -343,6 +359,12 @@ impl OdlApp {
                 tracing::error!("saving settings: {e:#}");
             }
             self.settings_dirty = false;
+        }
+        if self.subs_dirty || force {
+            if let Err(e) = store::save_subscriptions(&self.subs) {
+                tracing::error!("saving subscriptions: {e:#}");
+            }
+            self.subs_dirty = false;
         }
         self.last_save = Instant::now();
     }
@@ -468,6 +490,7 @@ impl OdlApp {
             }
             UiMsg::Bili(m) => self.handle_bili(m),
             UiMsg::ClipboardLink(text) => self.handle_clipboard_link(text),
+            UiMsg::SubChecked { id, result } => self.handle_sub_checked(id, result),
         }
     }
 
@@ -602,6 +625,152 @@ impl OdlApp {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Subscriptions
+
+    /// Creates a subscription from a playlist listing; everything listed now counts as seen.
+    pub fn subscribe(&mut self, link: &Link, pl: &PlaylistInfo, options: DownloadOptions) {
+        let url = match &link.kind {
+            LinkKind::VideoInPlaylist { .. } => link.playlist_url(),
+            _ if !pl.url.is_empty() => pl.url.clone(),
+            _ => link.url.clone(),
+        };
+        if self.subs.iter().any(|s| s.url == url) {
+            self.toast(ToastKind::Info, format!("Already subscribed to “{}”", pl.title));
+            return;
+        }
+        let id = self.subs.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.subs.push(Subscription {
+            id,
+            url,
+            site: link.site,
+            title: pl.title.clone(),
+            uploader: pl.uploader.clone(),
+            thumbnail: pl.thumbnail.clone().or_else(|| pl.entries.first().and_then(|e| e.thumbnail.clone())),
+            options,
+            seen: pl.entries.iter().map(Subscription::entry_key).collect(),
+            enabled: true,
+            last_checked: Some(chrono::Utc::now()),
+            last_new: 0,
+            total_downloaded: 0,
+            last_error: None,
+            created_at: chrono::Utc::now(),
+        });
+        self.subs_dirty = true;
+        self.toast(ToastKind::Success, format!("Subscribed to “{}”: new videos will download automatically", pl.title));
+    }
+
+    pub fn unsubscribe(&mut self, id: u64) {
+        self.subs.retain(|s| s.id != id);
+        self.sub_queue.retain(|q| *q != id);
+        self.subs_dirty = true;
+    }
+
+    pub fn set_subscription_enabled(&mut self, id: u64, enabled: bool) {
+        if let Some(s) = self.subs.iter_mut().find(|s| s.id == id) {
+            s.enabled = enabled;
+            self.subs_dirty = true;
+        }
+    }
+
+    /// Queues a subscription for checking right away.
+    pub fn check_subscription(&mut self, id: u64) {
+        if self.sub_checking != Some(id) && !self.sub_queue.contains(&id) {
+            self.sub_queue.push_front(id);
+        }
+        self.pump_subscriptions();
+    }
+
+    pub fn check_all_subscriptions(&mut self) {
+        let ids: Vec<u64> = self.subs.iter().filter(|s| s.enabled).map(|s| s.id).collect();
+        for id in ids {
+            if self.sub_checking != Some(id) && !self.sub_queue.contains(&id) {
+                self.sub_queue.push_back(id);
+            }
+        }
+        self.pump_subscriptions();
+    }
+
+    /// Once a minute, queue subscriptions whose check interval has passed.
+    fn tick_subscriptions(&mut self) {
+        if self.last_sub_tick.elapsed() < Duration::from_secs(60) {
+            return;
+        }
+        self.last_sub_tick = Instant::now();
+        let now = chrono::Utc::now();
+        let hours = self.settings.subscription_check_hours;
+        let due: Vec<u64> = self.subs.iter().filter(|s| s.is_due(hours, now)).map(|s| s.id).collect();
+        for id in due {
+            if self.sub_checking != Some(id) && !self.sub_queue.contains(&id) {
+                self.sub_queue.push_back(id);
+            }
+        }
+        self.pump_subscriptions();
+    }
+
+    /// Checks one subscription at a time (gentle on the sites).
+    fn pump_subscriptions(&mut self) {
+        if self.sub_checking.is_some() || self.tools.ytdlp.is_none() {
+            return;
+        }
+        while let Some(id) = self.sub_queue.pop_front() {
+            let Some(sub) = self.subs.iter().find(|s| s.id == id) else { continue };
+            let (url, site) = (sub.url.clone(), sub.site);
+            self.sub_checking = Some(id);
+            let ctx = self.run_ctx();
+            let bus = self.bus.clone();
+            self.rt.spawn(async move {
+                let result = ytdlp::probe(&ctx, &url, site, false).await.map_err(|e| format!("{e:#}"));
+                bus.send(UiMsg::SubChecked { id, result });
+            });
+            return;
+        }
+    }
+
+    fn handle_sub_checked(&mut self, id: u64, result: Result<ProbeResult, String>) {
+        self.sub_checking = None;
+        let known_urls: HashSet<String> = self.items.iter().map(|i| i.url.clone()).collect();
+        let Some(idx) = self.subs.iter().position(|s| s.id == id) else {
+            self.pump_subscriptions();
+            return;
+        };
+        self.subs[idx].last_checked = Some(chrono::Utc::now());
+        self.subs_dirty = true;
+        match result {
+            Ok(ProbeResult::Playlist(pl)) => {
+                let sub = &mut self.subs[idx];
+                sub.last_error = None;
+                if !pl.title.is_empty() {
+                    sub.title = pl.title.clone();
+                }
+                let fresh: Vec<String> = sub.new_entries(&pl).iter().map(|e| Subscription::entry_key(e)).collect();
+                // Entries the user already downloaded by hand just count as seen.
+                let mask: Vec<bool> = pl
+                    .entries
+                    .iter()
+                    .map(|e| fresh.contains(&Subscription::entry_key(e)) && !known_urls.contains(&e.url))
+                    .collect();
+                let count = mask.iter().filter(|m| **m).count();
+                sub.seen.extend(fresh);
+                sub.last_new = count;
+                sub.total_downloaded += count;
+                let (site, options, title) = (sub.site, sub.options.clone(), sub.title.clone());
+                if count > 0 {
+                    self.start_from_probe_ext(&ProbeResult::Playlist(pl), Some(site), Some(&mask), options, false);
+                    if self.settings.notify_download_finished {
+                        let noun = if count == 1 { "new video" } else { "new videos" };
+                        platform::notify("Subscription", &format!("{count} {noun} from {title}"));
+                    }
+                }
+            }
+            Ok(ProbeResult::Single(_)) => {
+                self.subs[idx].last_error = Some("This link no longer lists a playlist".into());
+            }
+            Err(e) => self.subs[idx].last_error = Some(e),
+        }
+        self.pump_subscriptions();
+    }
+
     fn handle_clipboard_link(&mut self, text: String) {
         if !self.settings.monitor_clipboard || self.last_self_copy.as_deref() == Some(text.trim()) {
             return;
@@ -708,12 +877,18 @@ impl OdlApp {
     }
 
     /// Creates download items for a probe result. `selected` limits playlist entries.
-    pub fn start_from_probe(
+    pub fn start_from_probe(&mut self, probe: &ProbeResult, site: Option<Site>, selected: Option<&[bool]>, opts: DownloadOptions) {
+        let numbered = self.settings.numerate_playlist_files;
+        self.start_from_probe_ext(probe, site, selected, opts, numbered);
+    }
+
+    pub fn start_from_probe_ext(
         &mut self,
         probe: &ProbeResult,
         site: Option<Site>,
         selected: Option<&[bool]>,
         mut opts: DownloadOptions,
+        numbered: bool,
     ) {
         let site_of = |url: &str| parse_link(url).ok().map(|l| l.site);
         match probe {
@@ -774,7 +949,7 @@ impl OdlApp {
                     item.thumbnail = e.thumbnail.clone();
                     item.duration = e.duration;
                     item.options = Some(opts.clone());
-                    if self.settings.numerate_playlist_files {
+                    if numbered {
                         item.file_prefix = Some(format!("{:0width$}. ", e.index));
                     }
                     self.enqueue_new(item);
@@ -1334,6 +1509,8 @@ impl eframe::App for OdlApp {
         if !self.toasts.is_empty() || self.paste_requested.is_some() || self.clip_offer.is_some() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
+        // Keep the subscription timer running while the window is idle.
+        ctx.request_repaint_after(Duration::from_secs(30));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

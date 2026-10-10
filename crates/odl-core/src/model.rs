@@ -526,6 +526,69 @@ impl DownloadItem {
 }
 
 // ---------------------------------------------------------------------------
+// Subscriptions
+
+/// A playlist/channel that is checked periodically; new entries are downloaded automatically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subscription {
+    pub id: u64,
+    pub url: String,
+    pub site: Site,
+    pub title: String,
+    #[serde(default)]
+    pub uploader: Option<String>,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+    /// Options for new downloads (output folder = the base folder; the playlist
+    /// subfolder is added as for normal playlist downloads).
+    pub options: DownloadOptions,
+    /// Entry ids (or URLs) already known; anything else is new.
+    #[serde(default)]
+    pub seen: std::collections::BTreeSet<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub last_checked: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_new: usize,
+    #[serde(default)]
+    pub total_downloaded: usize,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Subscription {
+    /// Key used to recognize an entry across checks.
+    pub fn entry_key(e: &PlaylistEntry) -> String {
+        if e.id.is_empty() {
+            e.url.clone()
+        } else {
+            e.id.clone()
+        }
+    }
+
+    /// Entries of a fresh listing that haven't been seen before (in playlist order).
+    pub fn new_entries<'a>(&self, pl: &'a PlaylistInfo) -> Vec<&'a PlaylistEntry> {
+        pl.entries.iter().filter(|e| !self.seen.contains(&Self::entry_key(e))).collect()
+    }
+
+    pub fn is_due(&self, interval_hours: u32, now: DateTime<Utc>) -> bool {
+        if !self.enabled || interval_hours == 0 {
+            return false;
+        }
+        match self.last_checked {
+            None => true,
+            Some(t) => now - t >= chrono::Duration::hours(interval_hours as i64),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Formatting helpers shared by the UI
 
 pub fn format_bytes(bytes: u64) -> String {
@@ -598,6 +661,38 @@ mod tests {
         assert_eq!(sanitize_filename("a/b\\c:d*e?"), "a_b_c_d_e_");
         assert_eq!(sanitize_filename("..."), "Untitled");
         assert_eq!(sanitize_filename(" name. "), "name");
+    }
+
+    #[test]
+    fn subscription_new_entries_and_due() {
+        let entry = |id: &str| PlaylistEntry { id: id.into(), url: format!("https://x/{id}"), ..Default::default() };
+        let pl = PlaylistInfo { entries: vec![entry("a"), entry("b"), entry("c")], ..Default::default() };
+        let now = Utc::now();
+        let mut sub = Subscription {
+            id: 1,
+            url: "https://www.youtube.com/playlist?list=PL1".into(),
+            site: Site::YouTube,
+            title: "t".into(),
+            uploader: None,
+            thumbnail: None,
+            options: DownloadOptions::default(),
+            seen: ["a".to_string(), "b".to_string()].into(),
+            enabled: true,
+            last_checked: None,
+            last_new: 0,
+            total_downloaded: 0,
+            last_error: None,
+            created_at: now,
+        };
+        let new: Vec<&str> = sub.new_entries(&pl).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(new, vec!["c"]);
+        assert!(sub.is_due(6, now));
+        sub.last_checked = Some(now - chrono::Duration::hours(2));
+        assert!(!sub.is_due(6, now));
+        assert!(sub.is_due(1, now));
+        assert!(!sub.is_due(0, now));
+        sub.enabled = false;
+        assert!(!sub.is_due(1, now));
     }
 
     #[test]

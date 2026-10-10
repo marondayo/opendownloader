@@ -37,6 +37,8 @@ pub struct Settings {
     /// Cut SponsorBlock "sponsor" segments from YouTube videos.
     pub sponsorblock: bool,
     pub remove_completed: bool,
+    /// Hours between subscription checks (0 = never check automatically).
+    pub subscription_check_hours: u32,
     pub filename_template: String,
     /// Extra raw arguments passed to yt-dlp (advanced).
     pub extra_ytdlp_args: String,
@@ -94,6 +96,7 @@ impl Default for Settings {
             keep_raw_comments: false,
             sponsorblock: false,
             remove_completed: false,
+            subscription_check_hours: 6,
             filename_template: "%(title).200B.%(ext)s".into(),
             extra_ytdlp_args: String::new(),
             rate_limit_kib: 0,
