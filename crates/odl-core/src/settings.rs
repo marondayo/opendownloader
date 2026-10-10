@@ -32,6 +32,8 @@ pub struct Settings {
     pub embed_thumbnail: bool,
     pub embed_metadata: bool,
     pub embed_chapters: bool,
+    /// Also keep the original danmaku/comment file (XML / JSON) next to the .ass.
+    pub keep_raw_comments: bool,
     /// Cut SponsorBlock "sponsor" segments from YouTube videos.
     pub sponsorblock: bool,
     pub remove_completed: bool,
@@ -83,6 +85,7 @@ impl Default for Settings {
             embed_thumbnail: true,
             embed_metadata: true,
             embed_chapters: true,
+            keep_raw_comments: false,
             sponsorblock: false,
             remove_completed: false,
             filename_template: "%(title).200B.%(ext)s".into(),

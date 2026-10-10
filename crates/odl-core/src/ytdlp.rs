@@ -650,6 +650,63 @@ async fn prepare_bilibili(ctx: &RunCtx, job: &DownloadJob, auth: &AuthArgs) -> a
     Ok(TempFile(path))
 }
 
+/// Fetches danmaku (Bilibili) or comments (Niconico) and writes `<video stem>.danmaku.ass`
+/// / `<video stem>.comments.ass` next to the video. Returns the number of comments.
+async fn save_comments(ctx: &RunCtx, job: &DownloadJob, auth: &AuthArgs, video: &std::path::Path) -> anyhow::Result<usize> {
+    use crate::danmaku::{self, AssConfig};
+    use crate::settings::AuthMethod;
+    let dir = video.parent().ok_or_else(|| anyhow!("no folder"))?;
+    let stem = video.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let keep_raw = ctx.settings.keep_raw_comments;
+    let (comments, ass_cfg, suffix) = match job.site {
+        Site::Bilibili => {
+            let account = ctx.settings.account(Site::Bilibili);
+            let cookie_file = match account.method {
+                AuthMethod::QrCode => Some(crate::auth::managed_cookie_file(Site::Bilibili)),
+                AuthMethod::CookiesFile => account.cookies_file.clone(),
+                _ => None,
+            };
+            let (cid, elems) = danmaku::fetch_bilibili(&job.url, cookie_file.as_deref()).await?;
+            if keep_raw && !elems.is_empty() {
+                std::fs::write(dir.join(format!("{stem}.danmaku.xml")), danmaku::bilibili_to_xml(cid, &elems))?;
+            }
+            (danmaku::bilibili_to_comments(&elems), AssConfig::bilibili(), "danmaku")
+        }
+        Site::Niconico => {
+            // yt-dlp knows how to talk to Niconico's comment server (thread keys etc.).
+            let tmp = crate::paths::get().temp_dir().join(format!("comments-{}", run_tag()));
+            tokio::fs::create_dir_all(&tmp).await?;
+            let mut cmd = base_command(ctx)?;
+            cmd.args(["--skip-download", "--write-subs", "--sub-langs", "comments", "--no-playlist", "-P"])
+                .arg(&tmp)
+                .args(["-o", "c.%(ext)s"])
+                .args(&auth.args)
+                .arg("--")
+                .arg(&job.url);
+            let out = cmd.output().await?;
+            let raw = tokio::fs::read(tmp.join("c.comments.json")).await;
+            let _ = tokio::fs::remove_dir_all(&tmp).await;
+            let raw = match raw {
+                Ok(r) => r,
+                Err(_) => {
+                    let lines: Vec<String> = String::from_utf8_lossy(&out.stderr).lines().map(strip_ansi).collect();
+                    anyhow::bail!(friendly_error(&lines, Site::Niconico));
+                }
+            };
+            if keep_raw {
+                std::fs::write(dir.join(format!("{stem}.comments.json")), &raw)?;
+            }
+            let json: Value = serde_json::from_slice(&raw)?;
+            (danmaku::parse_niconico(&json), AssConfig::niconico(), "comments")
+        }
+        _ => return Ok(0),
+    };
+    if !comments.is_empty() {
+        std::fs::write(dir.join(format!("{stem}.{suffix}.ass")), danmaku::to_ass(&comments, &ass_cfg))?;
+    }
+    Ok(comments.len())
+}
+
 /// `dir/name`, or `dir/stem (1).ext`, `dir/stem (2).ext`, … if that's taken.
 pub fn unique_path(dir: &std::path::Path, file_name: &std::ffi::OsStr) -> PathBuf {
     let candidate = dir.join(file_name);
@@ -853,7 +910,6 @@ pub async fn download(
         s = child.wait() => s?,
     };
     let stderr_lines = stderr_task.await.unwrap_or_default();
-    drop(auth);
     drop(info_file);
 
     if !status.success() {
@@ -872,6 +928,26 @@ pub async fn download(
         None => None,
     };
     finish_work_dir(&job.work_dir(), &job.output_dir);
+
+    // Danmaku / comments as an .ass file next to the video (never fails the download).
+    let mut comments_note = None;
+    let wants_comments = job.options.comments
+        && job.options.media == MediaKind::Video
+        && matches!(job.site, Site::Bilibili | Site::Niconico);
+    if let (true, Some(video)) = (wants_comments, &final_path) {
+        on_progress(Progress {
+            fraction: Some(1.0),
+            stage: Some("Saving comments…".into()),
+            ..Default::default()
+        });
+        comments_note = Some(match save_comments(ctx, job, &auth, video).await {
+            Ok(0) => "No comments".to_string(),
+            Ok(n) => format!("{n} comments saved"),
+            Err(e) => format!("Comments not saved: {e:#}"),
+        });
+    }
+    drop(auth);
+
     let size = match &final_path {
         Some(p) => tokio::fs::metadata(p).await.ok().map(|m| m.len()),
         None => None,
@@ -883,7 +959,7 @@ pub async fn download(
         fps: file.as_ref().and_then(|f| f.fps),
         note: match (&file, already_downloaded) {
             (None, true) => Some("Already downloaded earlier (skipped)".into()),
-            _ => None,
+            _ => comments_note,
         },
         file: final_path,
     })

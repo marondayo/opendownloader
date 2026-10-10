@@ -257,6 +257,12 @@ impl OdlApp {
         changed |= setting_row(ui, "Embed subtitles in the video file when possible", None, |ui| toggle(ui, &mut s.embed_subtitles).changed());
         changed |= setting_row(
             ui,
+            "Keep the original danmaku / comment file",
+            Some("Also saves Bilibili danmaku as .xml and Niconico comments as .json, next to the .ass."),
+            |ui| toggle(ui, &mut s.keep_raw_comments).changed(),
+        );
+        changed |= setting_row(
+            ui,
             "Remove sponsor segments (YouTube, SponsorBlock)",
             Some("Cuts community-marked sponsor segments out of the video."),
             |ui| toggle(ui, &mut s.sponsorblock).changed(),

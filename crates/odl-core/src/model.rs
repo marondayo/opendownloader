@@ -199,6 +199,8 @@ pub struct DownloadOptions {
     /// Comma separated subtitle languages (`en,ja`), `all`, or empty for none.
     pub subtitles: String,
     pub output_dir: PathBuf,
+    /// Save danmaku (Bilibili) / comments (Niconico) as .ass subtitles.
+    pub comments: bool,
 }
 
 impl Default for DownloadOptions {
@@ -212,6 +214,7 @@ impl Default for DownloadOptions {
             audio_bitrate: AudioBitrate::Best,
             subtitles: String::new(),
             output_dir: crate::paths::default_download_dir(),
+            comments: false,
         }
     }
 }

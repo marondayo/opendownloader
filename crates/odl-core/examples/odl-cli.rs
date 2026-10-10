@@ -67,7 +67,12 @@ async fn main() -> anyhow::Result<()> {
         Some("get") => {
             let link = parse_link(args.get(1).map(String::as_str).unwrap_or(""))?;
             let mut options = DownloadOptions::default();
-            match args.get(2).map(String::as_str).unwrap_or("video") {
+            let mut format = args.get(2).map(String::as_str).unwrap_or("video");
+            if let Some(f) = format.strip_suffix("+comments") {
+                options.comments = true;
+                format = f;
+            }
+            match format {
                 "video" => options.quality = Quality::Height(360),
                 fmt => {
                     options.media = MediaKind::Audio;
@@ -117,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        _ => eprintln!("usage: odl-cli install [tool] | tools | probe <url> | get <url> [video|mp3|m4a|ogg|opus|flac|wav] [dir]"),
+        _ => eprintln!("usage: odl-cli install [tool] | tools | probe <url> | get <url> [video|mp3|m4a|ogg|opus|flac|wav][+comments] [dir]"),
     }
     Ok(())
 }

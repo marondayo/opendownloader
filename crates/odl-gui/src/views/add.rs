@@ -366,6 +366,16 @@ impl OdlApp {
                     }
                 }
             });
+            if matches!(site, Site::Bilibili | Site::Niconico) {
+                ui.add_space(4.0);
+                let label = if site == Site::Bilibili {
+                    "Save danmaku as subtitles (.danmaku.ass)"
+                } else {
+                    "Save comments as subtitles (.comments.ass)"
+                };
+                ui.checkbox(&mut o.comments, label)
+                    .on_hover_text("Scrolling comments in a subtitle file next to the video; mpv and VLC load it automatically.");
+            }
         } else if !o.audio_format.is_lossless() && o.audio_format != AudioFormat::M4a {
             ui.add_space(6.0);
             widgets::hint(ui, "The best available audio stream is downloaded and converted with FFmpeg.");
