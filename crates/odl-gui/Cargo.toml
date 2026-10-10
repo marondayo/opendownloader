@@ -32,3 +32,32 @@ open = "5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+# `cargo deb -p odl-gui` (https://github.com/kornelski/cargo-deb)
+[package.metadata.deb]
+name = "opendownloader"
+maintainer = "OpenDownloader contributors"
+copyright = "OpenDownloader contributors"
+license-file = ["../../LICENSE", "0"]
+extended-description = "Free, open-source video and audio downloader for YouTube, Niconico, Bilibili and SoundCloud, with playlists, subscriptions, danmaku and a media converter. Uses yt-dlp and FFmpeg."
+section = "video"
+priority = "optional"
+depends = "$auto"
+recommends = "ffmpeg, fonts-noto-cjk"
+assets = [
+    ["target/release/opendownloader", "usr/bin/", "755"],
+    ["../../packaging/linux/io.github.opendownloader.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/linux/io.github.opendownloader.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/icons/256x256.png", "usr/share/icons/hicolor/256x256/apps/io.github.opendownloader.png", "644"],
+    ["../../packaging/icons/128x128.png", "usr/share/icons/hicolor/128x128/apps/io.github.opendownloader.png", "644"],
+    ["../../packaging/icons/64x64.png", "usr/share/icons/hicolor/64x64/apps/io.github.opendownloader.png", "644"],
+    ["../../packaging/icons/48x48.png", "usr/share/icons/hicolor/48x48/apps/io.github.opendownloader.png", "644"],
+    ["../../packaging/icons/32x32.png", "usr/share/icons/hicolor/32x32/apps/io.github.opendownloader.png", "644"],
+    ["../../README.md", "usr/share/doc/opendownloader/README.md", "644"],
+]

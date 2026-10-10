@@ -5,7 +5,7 @@ A free, open-source desktop app for downloading video and audio from **YouTube**
 [egui](https://github.com/emilk/egui); downloads are powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 and [FFmpeg](https://ffmpeg.org).
 
-> Status: **v0.1, Linux first.** The code is cross-platform and Windows support is planned next.
+> Status: **v0.1.** Linux is the primary platform; Windows builds are available and being tested.
 
 ## Features
 
@@ -41,6 +41,29 @@ and [FFmpeg](https://ffmpeg.org).
 - **Components manager**: installs and auto-updates private copies of yt-dlp, FFmpeg and Deno
   (the JavaScript runtime yt-dlp uses for YouTube). No root required.
 - History is saved; unfinished downloads come back paused and resume where they stopped.
+
+## Download
+
+Packages are on the [releases page](https://github.com/marondayo/opendownloader/releases):
+
+| Platform | Package |
+| --- | --- |
+| Linux (any distro) | `OpenDownloader-<version>-x86_64.AppImage`: `chmod +x` it and run |
+| Debian / Ubuntu | `opendownloader_<version>_amd64.deb`: `sudo apt install ./opendownloader_*.deb` |
+| Linux (manual) | `opendownloader-<version>-linux-x86_64.tar.gz`: unpack and run `./install.sh` (installs to `~/.local`) |
+| Windows 10/11 | `OpenDownloader-<version>-windows-x64-setup.exe` (no admin rights needed) or the portable `.zip` |
+
+## Building packages
+
+```sh
+cargo build --release -p odl-gui
+packaging/linux/build-appimage.sh          # dist/OpenDownloader-<version>-x86_64.AppImage
+cargo install cargo-deb && cargo deb -p odl-gui --no-build -o dist/
+packaging/linux/build-tarball.sh           # dist/opendownloader-<version>-linux-x86_64.tar.gz
+# Windows (Inno Setup 6): iscc /DAppVersion=<version> packaging\windows\opendownloader.iss
+```
+
+The `Release` GitHub Actions workflow builds all of these; pushing a `v*` tag attaches them to a draft release.
 
 ## Install / build (Linux)
 

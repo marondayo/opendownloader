@@ -6,7 +6,7 @@ members = ["crates/odl-core", "crates/odl-gui"]
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/opendownloader/opendownloader-pro"
+repository = "https://github.com/marondayo/opendownloader"
 rust-version = "1.95"
 
 [workspace.dependencies]

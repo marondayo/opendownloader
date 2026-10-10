@@ -1,0 +1,86 @@
+name: Release
+
+# Builds the Linux (AppImage, .deb, .tar.gz) and Windows (installer, portable .zip) packages.
+# - Manual run (Actions → Release → Run workflow): packages are uploaded as workflow artifacts.
+# - Pushing a tag like v0.1.0: packages are attached to a draft GitHub release.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04 # older glibc = runs on more distros
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libdbus-1-dev file
+      - uses: Swatinem/rust-cache@v2
+      - name: Version
+        run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p odl-gui
+      - run: cargo install cargo-deb --locked
+      - name: .deb
+        run: |
+          mkdir -p dist
+          cargo deb -p odl-gui --no-build --no-strip -o dist/
+      - name: AppImage
+        run: packaging/linux/build-appimage.sh "$VERSION"
+      - name: Tarball
+        run: packaging/linux/build-tarball.sh "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opendownloader-linux
+          path: dist/*
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Version
+        shell: bash
+        run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p odl-gui
+      - name: Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" packaging\windows\opendownloader.iss
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $stage = "OpenDownloader-$env:VERSION-windows-x64-portable"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item target\release\opendownloader.exe, README.md $stage
+          Copy-Item LICENSE "$stage\LICENSE.txt"
+          Compress-Archive -Path $stage -DestinationPath "dist\$stage.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opendownloader-windows
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: dist/*

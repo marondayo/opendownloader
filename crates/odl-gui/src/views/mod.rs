@@ -13,7 +13,7 @@ use crate::widgets;
 use eframe::egui::{self, vec2, Align, Align2, CornerRadius, Frame, Id, Layout, Margin, RichText, Stroke};
 use odl_core::format_bytes;
 
-pub const REPO_URL: &str = "https://github.com/opendownloader/opendownloader-pro";
+pub const REPO_URL: &str = "https://github.com/marondayo/opendownloader";
 
 impl OdlApp {
     pub fn ui_root(&mut self, ui: &mut egui::Ui) {
