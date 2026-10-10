@@ -23,6 +23,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libdbus-1-dev file
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-ubuntu-22.04
       - name: Version
         run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
       - run: cargo build --release --locked -p odl-gui
@@ -46,6 +48,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows-2022
       - name: Version
         shell: bash
         run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
