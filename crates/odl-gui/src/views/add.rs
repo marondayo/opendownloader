@@ -31,6 +31,8 @@ pub struct AddDialog {
     pub filter: String,
     /// Also subscribe to the playlist (download new entries automatically).
     pub subscribe: bool,
+    /// The "not enough disk space" warning is showing.
+    pub space_confirm: bool,
 }
 
 impl AddDialog {
@@ -60,7 +62,7 @@ impl AddDialog {
             ProbeResult::Single(_) => Vec::new(),
         };
         let subscribe = preselect == Preselect::Subscribe;
-        Self { link, probe, opts, checked, filter: String::new(), subscribe }
+        Self { link, probe, opts, checked, filter: String::new(), subscribe, space_confirm: false }
     }
 
     fn selected_count(&self) -> usize {
@@ -235,18 +237,66 @@ impl OdlApp {
             self.ui_options(ui, dlg);
             ui.add_space(16.0);
 
+            // Size estimate (sites report sizes for single videos; playlists are estimated
+            // from durations) against free space minus the keep-free limit.
+            let (estimate, peak, estimated) = match &dlg.probe {
+                ProbeResult::Single(info) => {
+                    let e = info.estimate_size(&dlg.opts);
+                    // Video downloads briefly need a second copy while merging.
+                    (e, e.map(|e| if dlg.opts.media == MediaKind::Video { e * 2 } else { e }), false)
+                }
+                ProbeResult::Playlist(pl) => {
+                    let chosen = pl.entries.iter().zip(&dlg.checked).filter(|(_, c)| **c).map(|(e, _)| e);
+                    let (total, largest) = dlg.opts.estimate_entries(chosen);
+                    let has_any = dlg.selected_count() > 0;
+                    (has_any.then_some(total), has_any.then(|| dlg.opts.peak_bytes(total, largest)), true)
+                }
+            };
+            let free = odl_core::disk::free_space(&dlg.opts.output_dir);
+            let reserve = self.keep_free_bytes();
+            let too_big = matches!((peak, free), (Some(p), Some(f)) if p.saturating_add(reserve) > f);
+            if !too_big {
+                dlg.space_confirm = false;
+            }
+            if dlg.space_confirm {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(66, 36, 34))
+                    .stroke(egui::Stroke::new(1.0, DANGER))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("⚠ Not enough disk space for all of this").strong().color(DANGER));
+                        ui.add(
+                            egui::Label::new(format!(
+                                "It needs about {}, but only {} is free in this folder and {} should stay free. \
+                                 Downloads stop (resumable) when the limit is reached.",
+                                format_bytes(peak.unwrap_or(0)),
+                                format_bytes(free.unwrap_or(0)),
+                                format_bytes(reserve)
+                            ))
+                            .wrap(),
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let anyway = egui::Button::new(RichText::new("Download anyway").color(egui::Color32::WHITE)).fill(DANGER);
+                            if ui.add(anyway).clicked() {
+                                outcome = DialogOutcome::Download;
+                            }
+                            let back = if estimated { "Choose fewer" } else { "Back" };
+                            if ui.button(back).clicked() {
+                                dlg.space_confirm = false;
+                            }
+                        });
+                    });
+                ui.add_space(10.0);
+            }
+
             ui.horizontal(|ui| {
-                let estimate = match &dlg.probe {
-                    ProbeResult::Single(info) => info.estimate_size(&dlg.opts),
-                    ProbeResult::Playlist(_) => None,
-                };
-                let free = odl_core::disk::free_space(&dlg.opts.output_dir);
-                let reserve = self.keep_free_bytes();
-                // Video downloads briefly need a second copy while merging.
-                let peak = estimate.map(|e| if dlg.opts.media == MediaKind::Video { e * 2 } else { e });
-                let too_big = matches!((peak, free), (Some(p), Some(f)) if p.saturating_add(reserve) > f);
                 if let Some(e) = estimate {
-                    ui.label(RichText::new(format!("≈ {}", format_bytes(e))).color(if too_big { DANGER } else { TEXT_DIM }));
+                    let text = if estimated { format!("≈ {} (estimated)", format_bytes(e)) } else { format!("≈ {}", format_bytes(e)) };
+                    ui.label(RichText::new(text).color(if too_big { DANGER } else { TEXT_DIM }))
+                        .on_hover_text(if estimated { "Estimated from the durations and the chosen quality." } else { "Reported by the site." });
                 }
                 if let Some(f) = free {
                     let r = ui.label(RichText::new(format!("{} free", format_bytes(f))).color(if too_big { DANGER } else { TEXT_FAINT }));
@@ -270,8 +320,13 @@ impl OdlApp {
                         }
                     };
                     let enabled = !is_playlist || n > 0 || dlg.subscribe;
+                    let wants_download = !is_playlist || n > 0;
                     if ui.add_enabled(enabled, primary_button(&label).min_size(vec2(180.0, 38.0))).clicked() {
-                        outcome = DialogOutcome::Download;
+                        if too_big && wants_download && !dlg.space_confirm {
+                            dlg.space_confirm = true;
+                        } else {
+                            outcome = DialogOutcome::Download;
+                        }
                     }
                     if ui.add(egui::Button::new("Cancel").min_size(vec2(110.0, 38.0))).clicked() {
                         outcome = DialogOutcome::Close;

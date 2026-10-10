@@ -812,6 +812,7 @@ impl OdlApp {
                 return;
             }
         }
+        let budget = odl_core::disk::free_space(&folder).map(|f| f.saturating_sub(self.keep_free_bytes()));
         match result {
             Ok(ProbeResult::Playlist(pl)) => {
                 let sub = &mut self.subs[idx];
@@ -821,13 +822,40 @@ impl OdlApp {
                 }
                 let fresh: Vec<String> = sub.new_entries(&pl).iter().map(|e| Subscription::entry_key(e)).collect();
                 // Entries the user already downloaded by hand just count as seen.
-                let mask: Vec<bool> = pl
+                let mut mask: Vec<bool> = pl
                     .entries
                     .iter()
                     .map(|e| fresh.contains(&Subscription::entry_key(e)) && !known_urls.contains(&e.url))
                     .collect();
+                // Only take as many new videos as fit; the rest stay unseen for a later check.
+                let mut deferred: HashSet<String> = HashSet::new();
+                if let Some(budget) = budget {
+                    let mut used = 0u64;
+                    let mut largest = 0u64;
+                    for (e, m) in pl.entries.iter().zip(mask.iter_mut()) {
+                        if !*m {
+                            continue;
+                        }
+                        let size = sub.options.estimate_bytes(e.duration.unwrap_or(300.0));
+                        let peak = sub.options.peak_bytes(used + size, largest.max(size));
+                        if peak > budget {
+                            *m = false;
+                            deferred.insert(Subscription::entry_key(e));
+                        } else {
+                            used += size;
+                            largest = largest.max(size);
+                        }
+                    }
+                }
                 let count = mask.iter().filter(|m| **m).count();
-                sub.seen.extend(fresh);
+                if !deferred.is_empty() {
+                    sub.last_error = Some(format!(
+                        "Not enough disk space for {} new video{}; they'll download on a later check.",
+                        deferred.len(),
+                        if deferred.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                sub.seen.extend(fresh.into_iter().filter(|k| !deferred.contains(k)));
                 sub.last_new = count;
                 sub.total_downloaded += count;
                 let (site, options, title) = (sub.site, sub.options.clone(), sub.title.clone());
@@ -1032,6 +1060,21 @@ impl OdlApp {
                 }
                 self.items.refresh_group(gid);
                 self.toast(ToastKind::Success, format!("Downloading {} items from “{}”", entries.len(), pl.title));
+                // The dialog warns up front; Smart Mode and subscriptions skip it, so warn here.
+                let (total, largest) = opts.estimate_entries(entries.iter().copied());
+                let peak = opts.peak_bytes(total, largest);
+                if let Some(free) = odl_core::disk::free_space(&dir) {
+                    if peak.saturating_add(self.keep_free_bytes()) > free {
+                        self.toast(
+                            ToastKind::Error,
+                            format!(
+                                "This playlist needs about {} but only {} is free; downloads stop at the keep-free limit.",
+                                format_bytes(peak),
+                                format_bytes(free)
+                            ),
+                        );
+                    }
+                }
             }
         }
     }

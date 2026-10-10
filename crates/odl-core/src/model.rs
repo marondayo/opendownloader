@@ -229,6 +229,60 @@ impl DownloadOptions {
         }
     }
 
+    /// Typical total bitrate (kbit/s) of a download with these options. Used to estimate
+    /// sizes when the site doesn't report them (playlist listings); errs on the high side.
+    pub fn typical_kbps(&self) -> u64 {
+        match self.media {
+            MediaKind::Video => {
+                let video = match self.quality.height().unwrap_or(1440) {
+                    0..=144 => 120,
+                    145..=240 => 300,
+                    241..=360 => 600,
+                    361..=480 => 1_100,
+                    481..=720 => 2_200,
+                    721..=1080 => 4_000,
+                    1081..=1440 => 9_000,
+                    1441..=2160 => 18_000,
+                    _ => 45_000,
+                };
+                video + 160
+            }
+            MediaKind::Audio => match (self.audio_format, self.audio_bitrate) {
+                (AudioFormat::Wav, _) => 1_411,
+                (AudioFormat::Flac, _) => 950,
+                (_, AudioBitrate::Kbps(k)) => k as u64,
+                (AudioFormat::Mp3 | AudioFormat::Ogg, AudioBitrate::Best) => 260,
+                (_, AudioBitrate::Best) => 160,
+            },
+        }
+    }
+
+    /// Estimated output size for media of the given duration.
+    pub fn estimate_bytes(&self, duration_secs: f64) -> u64 {
+        (duration_secs.max(0.0) * self.typical_kbps() as f64 * 125.0) as u64
+    }
+
+    /// Estimated (total, largest item) sizes for playlist entries. Entries without a known
+    /// duration are assumed to be as long as the average known one (or 5 minutes).
+    pub fn estimate_entries<'a>(&self, entries: impl IntoIterator<Item = &'a PlaylistEntry>) -> (u64, u64) {
+        let durations: Vec<Option<f64>> = entries.into_iter().map(|e| e.duration).collect();
+        let known: Vec<f64> = durations.iter().flatten().copied().collect();
+        let fallback = if known.is_empty() { 300.0 } else { known.iter().sum::<f64>() / known.len() as f64 };
+        durations.iter().fold((0, 0), |(total, largest), d| {
+            let size = self.estimate_bytes(d.unwrap_or(fallback));
+            (total + size, largest.max(size))
+        })
+    }
+
+    /// Peak disk usage for the estimate: everything plus one extra copy of the largest
+    /// video while it is being merged.
+    pub fn peak_bytes(&self, total: u64, largest: u64) -> u64 {
+        match self.media {
+            MediaKind::Video => total + largest,
+            MediaKind::Audio => total + largest / 2,
+        }
+    }
+
     pub fn wants_subtitles(&self) -> bool {
         self.media == MediaKind::Video && !self.subtitles.trim().is_empty()
     }
@@ -661,6 +715,23 @@ mod tests {
         assert_eq!(sanitize_filename("a/b\\c:d*e?"), "a_b_c_d_e_");
         assert_eq!(sanitize_filename("..."), "Untitled");
         assert_eq!(sanitize_filename(" name. "), "name");
+    }
+
+    #[test]
+    fn playlist_size_estimates() {
+        let video = DownloadOptions { quality: Quality::Height(1080), ..Default::default() };
+        // 1080p ≈ 4.16 Mbit/s ≈ 520 KB/s → a 10-minute video ≈ 312 MB.
+        assert_eq!(video.estimate_bytes(600.0), 312_000_000);
+        let entry = |d: Option<f64>| PlaylistEntry { duration: d, ..Default::default() };
+        let entries = [entry(Some(600.0)), entry(Some(300.0)), entry(None)];
+        let (total, largest) = video.estimate_entries(&entries);
+        // The unknown one counts as the 450 s average.
+        assert_eq!(total, video.estimate_bytes(1350.0));
+        assert_eq!(largest, video.estimate_bytes(600.0));
+        assert_eq!(video.peak_bytes(total, largest), total + largest);
+        let mp3 = DownloadOptions { media: MediaKind::Audio, audio_bitrate: AudioBitrate::Kbps(320), ..Default::default() };
+        assert_eq!(mp3.estimate_bytes(60.0), 2_400_000);
+        assert_eq!(DownloadOptions { media: MediaKind::Audio, audio_format: AudioFormat::Wav, ..Default::default() }.typical_kbps(), 1_411);
     }
 
     #[test]

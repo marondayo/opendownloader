@@ -23,9 +23,26 @@ fn free_space_impl(path: &Path) -> Option<u64> {
     Some(st.f_bavail as u64 * st.f_frsize as u64)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn free_space_impl(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            free_bytes_available_to_caller: *mut u64,
+            total_bytes: *mut u64,
+            total_free_bytes: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut available = 0u64;
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(available)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn free_space_impl(_path: &Path) -> Option<u64> {
-    // TODO(windows): GetDiskFreeSpaceExW.
     None
 }
 
@@ -139,7 +156,7 @@ mod tests {
     #[test]
     fn free_space_of_missing_folder_uses_ancestor() {
         let missing = std::env::temp_dir().join("odl-does-not-exist/a/b");
-        if cfg!(unix) {
+        if cfg!(any(unix, windows)) {
             assert!(free_space(&missing).is_some_and(|f| f > 0));
         }
     }
@@ -148,7 +165,7 @@ mod tests {
     fn guard_reports_shortage() {
         let dir = std::env::temp_dir();
         if let Some(g) = SpaceGuard::new(&dir, 1) {
-            if cfg!(unix) {
+            if cfg!(any(unix, windows)) {
                 assert!(g.check_needed(0).is_ok());
                 let err = g.check_needed(u64::MAX / 4).unwrap_err();
                 assert!(err.starts_with("Not enough disk space"));
