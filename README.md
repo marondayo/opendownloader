@@ -26,6 +26,13 @@ and [FFmpeg](https://ffmpeg.org).
   - Niconico: email + password (stored in a private netrc), browser cookies or cookies.txt
   - Bilibili: **native QR code login** (scan with the Bilibili app), browser cookies or cookies.txt
   - SoundCloud: OAuth token, browser cookies or cookies.txt
+- **Subscriptions**: subscribe to a playlist, channel, mylist or favorites list and new videos download
+  automatically (checked every 1–24 h, one subscription at a time).
+- **Clipboard watching**: copy a supported link anywhere and the app offers to download it.
+- **Danmaku & comments**: save Bilibili danmaku and Niconico comments as `.ass` subtitles next to the video
+  (scrolling/top/bottom, colors and sizes kept; mpv and VLC load them automatically).
+- **Fast Bilibili downloads overseas**: the fastest official CDN mirror is picked before each download.
+- Downloads never touch existing files: each runs in a private working folder and the result gets a free name.
 - **Smart Mode**: one-click downloads with your preset.
 - Pause / resume / retry, simultaneous downloads (1–8), fragment threads, speed limit, proxy
   (HTTP/HTTPS/SOCKS5), download archive (never download twice), desktop notifications.
