@@ -1,7 +1,7 @@
 name: Release
 
 # Builds the Linux (AppImage, .deb, .tar.gz) and Windows (installer, portable .zip) packages.
-# - Manual run (Actions → Release → Run workflow): packages are uploaded as workflow artifacts.
+# - Manual run (Actions > Release > Run workflow): packages are uploaded as workflow artifacts.
 # - Pushing a tag like v0.1.0: packages are attached to a draft GitHub release.
 
 on:
@@ -32,9 +32,9 @@ jobs:
           mkdir -p dist
           cargo deb -p odl-gui --no-build --no-strip -o dist/
       - name: AppImage
-        run: packaging/linux/build-appimage.sh "$VERSION"
+        run: sh packaging/linux/build-appimage.sh "$VERSION"
       - name: Tarball
-        run: packaging/linux/build-tarball.sh "$VERSION"
+        run: sh packaging/linux/build-tarball.sh "$VERSION"
       - uses: actions/upload-artifact@v4
         with:
           name: opendownloader-linux
