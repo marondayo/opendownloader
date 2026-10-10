@@ -305,6 +305,22 @@ pub async fn install(tool: Tool, progress: impl Fn(InstallProgress) + Send + Syn
     let (url, kind) = asset(tool)?;
     let bin = crate::paths::get().bin_dir();
     tokio::fs::create_dir_all(&bin).await?;
+    // Archive + unpacked copy at the same time (FFmpeg's tar.xz unpacks to ~600 MB).
+    let needed: u64 = match tool {
+        Tool::Ffmpeg => 900 << 20,
+        Tool::Deno => 300 << 20,
+        Tool::YtDlp => 100 << 20,
+    };
+    if let Some(free) = crate::disk::free_space(&bin) {
+        if free < needed {
+            bail!(
+                "not enough disk space to install {}: needs about {}, {} free",
+                tool.label(),
+                crate::model::format_bytes(needed),
+                crate::model::format_bytes(free)
+            );
+        }
+    }
     let target = tool.managed_path();
     let suffix = match kind {
         Archive::None => "download",

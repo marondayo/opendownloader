@@ -237,11 +237,22 @@ impl OdlApp {
 
             ui.horizontal(|ui| {
                 let estimate = match &dlg.probe {
-                    ProbeResult::Single(info) => info.estimate_size(&dlg.opts).map(|s| format!("≈ {}", format_bytes(s))),
+                    ProbeResult::Single(info) => info.estimate_size(&dlg.opts),
                     ProbeResult::Playlist(_) => None,
                 };
+                let free = odl_core::disk::free_space(&dlg.opts.output_dir);
+                let reserve = self.keep_free_bytes();
+                // Video downloads briefly need a second copy while merging.
+                let peak = estimate.map(|e| if dlg.opts.media == MediaKind::Video { e * 2 } else { e });
+                let too_big = matches!((peak, free), (Some(p), Some(f)) if p.saturating_add(reserve) > f);
                 if let Some(e) = estimate {
-                    ui.label(RichText::new(e).color(TEXT_DIM));
+                    ui.label(RichText::new(format!("≈ {}", format_bytes(e))).color(if too_big { DANGER } else { TEXT_DIM }));
+                }
+                if let Some(f) = free {
+                    let r = ui.label(RichText::new(format!("{} free", format_bytes(f))).color(if too_big { DANGER } else { TEXT_FAINT }));
+                    if too_big {
+                        r.on_hover_text("Not enough space: the download will be stopped. Free up space or pick another folder.");
+                    }
                 }
                 let is_playlist = matches!(dlg.probe, ProbeResult::Playlist(_));
                 if is_playlist {

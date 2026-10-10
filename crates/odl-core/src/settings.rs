@@ -20,6 +20,8 @@ pub struct Settings {
 
     // Downloads
     pub max_concurrent: usize,
+    /// Stop downloads when free disk space would drop below this (MiB, 0 = off).
+    pub keep_free_mib: u64,
     /// Parallel fragment downloads for HLS/DASH (`yt-dlp -N`).
     pub fragment_threads: u32,
     pub playlist_subdirs: bool,
@@ -83,6 +85,7 @@ impl Default for Settings {
             last_options: preset,
             confirm_exit_with_active: true,
             max_concurrent: 3,
+            keep_free_mib: 2048,
             fragment_threads: 4,
             playlist_subdirs: true,
             numerate_playlist_files: true,

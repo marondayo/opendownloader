@@ -306,6 +306,51 @@ impl OdlApp {
         changed |= ui
             .add(egui::TextEdit::singleline(&mut s.extra_ytdlp_args).hint_text("e.g. --limit-rate 5M").desired_width(f32::INFINITY))
             .changed();
+
+        section_title(ui, "Disk space");
+        let label = |mib: u64| match mib {
+            0 => "No limit (not recommended)".to_string(),
+            m if m < 1024 => format!("{m} MB"),
+            m => format!("{} GB", m / 1024),
+        };
+        setting_row(
+            ui,
+            "Always keep this much free",
+            Some("Downloads that don't fit are refused, and running ones stop (resumable) before the disk fills up."),
+            |ui| {
+                egui::ComboBox::from_id_salt("keep-free").selected_text(label(s.keep_free_mib)).width(200.0).show_ui(ui, |ui| {
+                    for m in [0, 512, 1024, 2048, 5120, 10240, 20480, 51200] {
+                        changed |= ui.selectable_value(&mut s.keep_free_mib, m, label(m)).changed();
+                    }
+                });
+            },
+        );
+        let (mut scan, mut delete) = (false, false);
+        setting_row(
+            ui,
+            "Leftover partial downloads",
+            Some("Unfinished downloads removed from the list (or from older sessions) can leave partial files behind."),
+            |ui| {
+                match &self.leftovers {
+                    Some(found) if !found.is_empty() => {
+                        delete = ui.add(egui::Button::new(RichText::new("Delete").color(Color32::WHITE)).fill(DANGER)).clicked();
+                        let bytes: u64 = found.iter().map(|l| l.bytes).sum();
+                        ui.label(RichText::new(format!("{} in {} folder{}", format_bytes(bytes), found.len(), if found.len() == 1 { "" } else { "s" })).color(WARN));
+                    }
+                    Some(_) => {
+                        scan = ui.button("Scan again").clicked();
+                        ui.label(RichText::new("✔ Nothing left over").color(ACCENT_HOVER));
+                    }
+                    None => scan = ui.button("Scan").clicked(),
+                }
+            },
+        );
+        if scan {
+            self.scan_leftovers();
+        }
+        if delete {
+            self.delete_leftovers();
+        }
         changed
     }
 

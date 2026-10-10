@@ -15,6 +15,9 @@ use std::sync::Arc;
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut settings = store::load_settings();
+    if let Ok(v) = std::env::var("ODL_KEEP_FREE_MIB") {
+        settings.keep_free_mib = v.parse()?;
+    }
     match args.first().map(String::as_str) {
         Some("install") => {
             let only = args.get(1).map(String::as_str);

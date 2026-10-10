@@ -34,6 +34,7 @@ pub enum UiMsg {
     /// A supported link was copied somewhere on the desktop.
     ClipboardLink(String),
     SubChecked { id: u64, result: Result<ProbeResult, String> },
+    Leftovers(Vec<odl_core::disk::Leftover>),
 }
 
 pub enum BiliMsg {
@@ -203,6 +204,9 @@ pub struct OdlApp {
     sub_queue: std::collections::VecDeque<u64>,
     pub sub_checking: Option<u64>,
     last_sub_tick: Instant,
+    /// Result of the last leftover-partial-downloads scan.
+    pub leftovers: Option<Vec<odl_core::disk::Leftover>>,
+    free_cache: Option<(Instant, PathBuf, Option<u64>)>,
     pub cred_inputs: HashMap<Site, (String, String)>,
     quitting: bool,
 }
@@ -276,6 +280,8 @@ impl OdlApp {
             sub_checking: None,
             // First automatic check ~15 s after start.
             last_sub_tick: Instant::now() - Duration::from_secs(45),
+            leftovers: None,
+            free_cache: None,
             cred_inputs: HashMap::new(),
             quitting: false,
         };
@@ -491,6 +497,7 @@ impl OdlApp {
             UiMsg::Bili(m) => self.handle_bili(m),
             UiMsg::ClipboardLink(text) => self.handle_clipboard_link(text),
             UiMsg::SubChecked { id, result } => self.handle_sub_checked(id, result),
+            UiMsg::Leftovers(found) => self.leftovers = Some(found),
         }
     }
 
@@ -626,6 +633,61 @@ impl OdlApp {
     }
 
     // -----------------------------------------------------------------------
+    // Disk space
+
+    /// Free space of a folder's volume, refreshed at most every 5 seconds.
+    pub fn free_space_cached(&mut self, dir: &Path) -> Option<u64> {
+        if let Some((at, cached_dir, free)) = &self.free_cache {
+            if cached_dir == dir && at.elapsed() < Duration::from_secs(5) {
+                return *free;
+            }
+        }
+        let free = odl_core::disk::free_space(dir);
+        self.free_cache = Some((Instant::now(), dir.to_path_buf(), free));
+        free
+    }
+
+    pub fn keep_free_bytes(&self) -> u64 {
+        self.settings.keep_free_mib * 1024 * 1024
+    }
+
+    /// Scans download folders for working folders no list item uses any more.
+    pub fn scan_leftovers(&mut self) {
+        let mut dirs: Vec<PathBuf> = vec![
+            self.settings.download_dir.clone(),
+            self.settings.smart_preset.output_dir.clone(),
+            self.settings.last_options.output_dir.clone(),
+        ];
+        dirs.extend(self.items.iter().map(|i| i.output_dir.clone()));
+        for s in &self.subs {
+            dirs.push(s.options.output_dir.clone());
+            dirs.push(s.options.output_dir.join(sanitize_filename(&s.title)));
+        }
+        dirs.sort();
+        dirs.dedup();
+        let active: HashSet<String> =
+            self.items.iter().map(|i| format!("{}-{}", i.id, i.created_at.timestamp_millis())).collect();
+        self.leftovers = None;
+        let bus = self.bus.clone();
+        self.rt.spawn_blocking(move || {
+            bus.send(UiMsg::Leftovers(odl_core::disk::find_leftovers(&dirs, &active)));
+        });
+    }
+
+    pub fn delete_leftovers(&mut self) {
+        let Some(found) = self.leftovers.take() else { return };
+        let mut freed = 0;
+        for l in &found {
+            if std::fs::remove_dir_all(&l.path).is_ok() {
+                freed += l.bytes;
+            }
+        }
+        self.leftovers = Some(Vec::new());
+        self.free_cache = None;
+        self.toast(ToastKind::Success, format!("Freed {}", format_bytes(freed)));
+    }
+
+    // -----------------------------------------------------------------------
     // Subscriptions
 
     /// Creates a subscription from a playlist listing; everything listed now counts as seen.
@@ -736,6 +798,20 @@ impl OdlApp {
         };
         self.subs[idx].last_checked = Some(chrono::Utc::now());
         self.subs_dirty = true;
+        // Don't fill the disk unattended: skip this round without marking anything as seen.
+        let folder = self.subs[idx].options.output_dir.clone();
+        if let Some(free) = odl_core::disk::free_space(&folder) {
+            let reserve = self.keep_free_bytes();
+            if reserve > 0 && free < reserve {
+                self.subs[idx].last_error = Some(format!(
+                    "Skipped: only {} free (keep-free limit {}). Will try again next check.",
+                    format_bytes(free),
+                    format_bytes(reserve)
+                ));
+                self.pump_subscriptions();
+                return;
+            }
+        }
         match result {
             Ok(ProbeResult::Playlist(pl)) => {
                 let sub = &mut self.subs[idx];

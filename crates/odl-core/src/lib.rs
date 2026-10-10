@@ -10,6 +10,7 @@ pub mod auth;
 pub mod bilicdn;
 pub mod convert;
 pub mod danmaku;
+pub mod disk;
 pub mod manager;
 pub mod model;
 pub mod paths;

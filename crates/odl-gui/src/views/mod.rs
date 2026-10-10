@@ -158,6 +158,9 @@ impl OdlApp {
     }
 
     fn ui_statusbar(&mut self, ui: &mut egui::Ui) {
+        let dir = self.settings.download_dir.clone();
+        let free = self.free_space_cached(&dir);
+        let reserve = self.keep_free_bytes();
         ui.horizontal(|ui| {
             let (running, queued, speed) = self.items.running_count();
             let text = match (running, queued) {
@@ -166,6 +169,14 @@ impl OdlApp {
                 (r, q) => format!("{r} downloading · {q} waiting · {}/s", format_bytes(speed as u64)),
             };
             ui.label(RichText::new(text).small().color(TEXT_DIM));
+            if let Some(free) = free {
+                // Warn once less than twice the keep-free limit (or 5 GB) is left.
+                let low = free < (reserve * 2).max(5 << 30);
+                let color = if reserve > 0 && free < reserve { DANGER } else if low { WARN } else { TEXT_FAINT };
+                ui.label(RichText::new("·").small().color(TEXT_FAINT));
+                ui.label(RichText::new(format!("{} free", format_bytes(free))).small().color(color))
+                    .on_hover_text(format!("Free space in {}", dir.display()));
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let v = self
                     .tool_state

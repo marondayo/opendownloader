@@ -93,6 +93,14 @@ pub async fn convert(
     if let Some(dir) = out.parent() {
         tokio::fs::create_dir_all(dir).await?;
     }
+    let out_dir = out.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut guard = crate::disk::SpaceGuard::new(&out_dir, ctx.settings.keep_free_mib);
+    if let Some(g) = guard.as_ref() {
+        // The output is rarely larger than the source (WAV from a compressed file can be).
+        let source = std::fs::metadata(&opts.source).map(|m| m.len()).unwrap_or(0);
+        let estimate = if opts.target == ConvertTarget::Audio(AudioFormat::Wav) { source * 4 } else { source };
+        g.check_needed(estimate).map_err(JobError::Failed)?;
+    }
     let mut cmd = command(&ffmpeg.path);
     cmd.args(["-hide_banner", "-nostdin", "-n", "-i"])
         .arg(&opts.source)
@@ -151,7 +159,14 @@ pub async fn convert(
                             "Converting…".into()
                         });
                     }
-                    "progress" => on_progress(progress.clone()),
+                    "progress" => {
+                        on_progress(progress.clone());
+                        if let Some(msg) = guard.as_mut().and_then(|g| g.poll().err()) {
+                            kill_tree(&mut child).await;
+                            let _ = tokio::fs::remove_file(&out).await;
+                            return Err(JobError::Failed(msg));
+                        }
+                    }
                     _ => {}
                 }
             }

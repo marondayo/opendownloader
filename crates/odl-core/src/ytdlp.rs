@@ -828,6 +828,14 @@ pub async fn download(
         None => cmd.arg("--").arg(&job.url),
     };
 
+    // Never fill the disk: refuse to start below the keep-free limit, check the expected
+    // size once yt-dlp reports it, and keep watching while downloading/merging.
+    let mut guard = crate::disk::SpaceGuard::new(&job.output_dir, ctx.settings.keep_free_mib);
+    if let Some(g) = guard.as_mut() {
+        g.poll().map_err(JobError::Failed)?;
+    }
+    let mut space_error: Option<String> = None;
+
     let mut child = cmd.spawn().map_err(|e| JobError::Failed(format!("could not start yt-dlp: {e}")))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -877,8 +885,14 @@ pub async fn download(
                             on_progress(last.clone());
                             last_emit = Instant::now();
                         }
+                        if let Some(g) = guard.as_mut() {
+                            space_error = g.poll().err();
+                        }
                     }
                     OutLine::PostProcess { status, name } => {
+                        if let Some(g) = guard.as_mut() {
+                            space_error = g.poll().err();
+                        }
                         if status == "started" || status == "processing" {
                             let mut p = last.clone();
                             p.stage = Some(postprocessor_label(&name).to_string());
@@ -887,7 +901,19 @@ pub async fn download(
                             on_progress(p);
                         }
                     }
-                    OutLine::ExpectedSize(size) => tracker.set_expected_total(size),
+                    OutLine::ExpectedSize(size) => {
+                        tracker.set_expected_total(size);
+                        if let (Some(g), Some(total)) = (guard.as_ref(), size) {
+                            // Parts already on disk (resume) don't count again; merging
+                            // video+audio briefly needs a second copy.
+                            let existing = crate::disk::dir_size(&job.work_dir());
+                            let peak = match job.options.media {
+                                MediaKind::Video => total,
+                                MediaKind::Audio => total / 2,
+                            };
+                            space_error = g.check_needed(total.saturating_sub(existing) + peak).err();
+                        }
+                    }
                     OutLine::File(info) => file = Some(info),
                     OutLine::Other(text) => {
                         if text.contains("has already been recorded in the archive")
@@ -897,6 +923,11 @@ pub async fn download(
                         }
                         tracing::debug!(target: "yt-dlp", "{text}");
                     }
+                }
+                if let Some(msg) = space_error.take() {
+                    // Partial files stay, so Retry resumes once space is freed.
+                    kill_tree(&mut child).await;
+                    return Err(JobError::Failed(msg));
                 }
             }
         }
