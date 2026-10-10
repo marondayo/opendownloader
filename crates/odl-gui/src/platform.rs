@@ -44,12 +44,27 @@ pub fn show_in_folder(path: &Path) {
         }
         #[cfg(windows)]
         if path.is_file() {
-            let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+            // Explorer wants `/select,"C:\dir\file name.mp4"`: quotes around the path only. `Command::arg`
+            // would quote the whole argument, which Explorer can't parse, so it opens Documents instead.
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("explorer")
+                .raw_arg(format!("/select,\"{}\"", explorer_path(&path)))
+                .spawn();
             return;
         }
         let dir = if path.is_dir() { path.as_path() } else { path.parent().unwrap_or(&path) };
         open_path(dir);
     });
+}
+
+/// A path Explorer accepts: backslashes only and no `\\?\` prefix.
+#[cfg(windows)]
+fn explorer_path(path: &Path) -> String {
+    let s = path.display().to_string().replace('/', "\\");
+    match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s),
+    }
 }
 
 /// Shows a desktop notification (best effort, never blocks the UI).
