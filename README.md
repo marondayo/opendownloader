@@ -75,7 +75,7 @@ cargo run -p odl-core --example odl-cli -- get <url> mp3 ~/Music
 
 ## Project layout
 
-```
+```text
 crates/odl-core   engine: link parsing, yt-dlp/ffmpeg orchestration, queue, accounts, components
 crates/odl-gui    the desktop app (egui/eframe), binary name `opendownloader`
 packaging/linux   .desktop file, icon, user install script
