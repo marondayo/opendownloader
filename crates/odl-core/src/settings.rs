@@ -43,6 +43,8 @@ pub struct Settings {
     /// Download rate limit in KiB/s, 0 = unlimited.
     pub rate_limit_kib: u32,
     pub proxy: ProxyConfig,
+    /// Bilibili CDN mirror: "auto" (fastest), a host name, or empty to keep what Bilibili returns.
+    pub bilibili_cdn: String,
 
     // Notifications
     pub notify_download_finished: bool,
@@ -87,6 +89,7 @@ impl Default for Settings {
             extra_ytdlp_args: String::new(),
             rate_limit_kib: 0,
             proxy: ProxyConfig::default(),
+            bilibili_cdn: crate::bilicdn::AUTO.into(),
             notify_download_finished: true,
             notify_conversion_finished: true,
             accounts: BTreeMap::new(),

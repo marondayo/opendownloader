@@ -97,10 +97,11 @@ async fn main() -> anyhow::Result<()> {
             while let Some(ev) = rx.recv().await {
                 match ev {
                     EngineEvent::Progress(_, p) => eprint!(
-                        "\r{:>5.1}% {} / {} {}            ",
+                        "\r{:>5.1}% {} / {} {}/s {}            ",
                         p.fraction.unwrap_or(0.0) * 100.0,
                         format_bytes(p.downloaded),
                         p.total.map(format_bytes).unwrap_or_else(|| "?".into()),
+                        format_bytes(p.speed.unwrap_or(0.0) as u64),
                         p.stage.unwrap_or_default()
                     ),
                     EngineEvent::Finished(_, o) => {

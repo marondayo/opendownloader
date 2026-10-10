@@ -603,6 +603,43 @@ pub fn friendly_error(stderr_lines: &[String], site: Site) -> String {
 // ---------------------------------------------------------------------------
 // Running a download
 
+/// A temporary file deleted on drop.
+struct TempFile(PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Extracts a Bilibili video, points its streams at the chosen mirror and saves the info JSON.
+async fn prepare_bilibili(ctx: &RunCtx, job: &DownloadJob, auth: &AuthArgs) -> anyhow::Result<TempFile> {
+    let mut cmd = base_command(ctx)?;
+    cmd.args(["-J", "--no-playlist", "--no-warnings"]).args(&auth.args).arg("--").arg(&job.url);
+    let out = cmd.output().await?;
+    if !out.status.success() {
+        let lines: Vec<String> = String::from_utf8_lossy(&out.stderr).lines().map(strip_ansi).collect();
+        anyhow::bail!(friendly_error(&lines, Site::Bilibili));
+    }
+    let mut info: Value = serde_json::from_slice(&out.stdout)?;
+    let choice = ctx.settings.bilibili_cdn.trim();
+    let host = if choice == crate::bilicdn::AUTO {
+        let sample = crate::bilicdn::sample_url(&info).ok_or_else(|| anyhow!("no mirrorable stream"))?;
+        let (host, speed) =
+            crate::bilicdn::fastest_mirror(&sample).await.ok_or_else(|| anyhow!("no mirror responded"))?;
+        tracing::info!("bilibili: using {host} ({:.0} KB/s in test)", speed / 1024.0);
+        host
+    } else {
+        choice.to_string()
+    };
+    crate::bilicdn::rewrite_hosts(&mut info, &host);
+    let dir = crate::paths::get().temp_dir();
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = dir.join(format!("bilibili-{}.info.json", run_tag()));
+    tokio::fs::write(&path, serde_json::to_vec(&info)?).await?;
+    Ok(TempFile(path))
+}
+
 pub async fn download(
     ctx: &RunCtx,
     job: &DownloadJob,
@@ -615,9 +652,28 @@ pub async fn download(
     if ctx.tools.ffmpeg.is_none() {
         return Err(JobError::Failed("FFmpeg is not installed. Open Settings → Components to install it.".into()));
     }
-    let mut cmd = base_command(ctx)?;
     let auth = AuthArgs::prepare(job.site, &ctx.settings.account(job.site), &run_tag())?;
-    cmd.args(download_args(&ctx.settings, job)).args(&auth.args).arg("--").arg(&job.url);
+
+    // Bilibili: move the streams to the fastest mirror (see `bilicdn`). Falls back to a
+    // normal download if anything goes wrong.
+    let mut info_file: Option<TempFile> = None;
+    if job.site == Site::Bilibili && !ctx.settings.bilibili_cdn.trim().is_empty() {
+        on_progress(Progress { stage: Some("Finding the fastest Bilibili server…".into()), ..Default::default() });
+        tokio::select! {
+            _ = cancel.cancelled() => return Err(JobError::Cancelled),
+            r = prepare_bilibili(ctx, job, &auth) => match r {
+                Ok(f) => info_file = Some(f),
+                Err(e) => tracing::warn!("bilibili mirror selection skipped: {e:#}"),
+            }
+        }
+    }
+
+    let mut cmd = base_command(ctx)?;
+    cmd.args(download_args(&ctx.settings, job)).args(&auth.args);
+    match &info_file {
+        Some(f) => cmd.arg("--load-info-json").arg(&f.0),
+        None => cmd.arg("--").arg(&job.url),
+    };
 
     let mut child = cmd.spawn().map_err(|e| JobError::Failed(format!("could not start yt-dlp: {e}")))?;
     let stdout = child.stdout.take().expect("piped stdout");
@@ -695,6 +751,7 @@ pub async fn download(
     };
     let stderr_lines = stderr_task.await.unwrap_or_default();
     drop(auth);
+    drop(info_file);
 
     if !status.success() {
         return Err(JobError::Failed(friendly_error(&stderr_lines, job.site)));

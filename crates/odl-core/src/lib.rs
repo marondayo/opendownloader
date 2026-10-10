@@ -7,6 +7,7 @@
 //! and keeps the external tools installed and up to date.
 
 pub mod auth;
+pub mod bilicdn;
 pub mod convert;
 pub mod manager;
 pub mod model;

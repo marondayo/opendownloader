@@ -287,6 +287,23 @@ impl OdlApp {
         hint(ui, "Limits each download. Useful on slow or shared connections.");
 
         ui.add_space(10.0);
+        section_title(ui, "Bilibili server");
+        let label = |v: &str| match v {
+            "" => "As provided by Bilibili".to_string(),
+            odl_core::bilicdn::AUTO => "Automatic (fastest)".to_string(),
+            host => host.to_string(),
+        };
+        egui::ComboBox::from_id_salt("bili-cdn").selected_text(label(&s.bilibili_cdn)).width(300.0).show_ui(ui, |ui| {
+            changed |= ui.selectable_value(&mut s.bilibili_cdn, odl_core::bilicdn::AUTO.to_string(), label(odl_core::bilicdn::AUTO)).changed();
+            changed |= ui.selectable_value(&mut s.bilibili_cdn, String::new(), label("")).changed();
+            for host in odl_core::bilicdn::MIRRORS {
+                changed |= ui.selectable_value(&mut s.bilibili_cdn, host.to_string(), *host).changed();
+            }
+        });
+        hint(ui, "Bilibili's default overseas server often crawls on parts of a video it hasn't cached. \
+                  Automatic tests its official mirrors before each download and uses the fastest.");
+
+        ui.add_space(10.0);
         section_title(ui, "Proxy");
         let p = &mut s.proxy;
         changed |= setting_row(ui, "Use a proxy", Some("Also helps with region-locked videos."), |ui| toggle(ui, &mut p.enabled).changed());
