@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OpenDownloader
+GenericName=Video Downloader
+Comment=Download videos and audio from YouTube, Niconico, Bilibili and SoundCloud
+Exec=opendownloader %u
+Icon=io.github.opendownloader
+Terminal=false
+Categories=AudioVideo;Network;
+Keywords=youtube;niconico;bilibili;soundcloud;download;mp3;video;
+StartupWMClass=io.github.opendownloader

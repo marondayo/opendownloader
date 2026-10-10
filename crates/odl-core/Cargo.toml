@@ -1,0 +1,27 @@
+[package]
+name = "odl-core"
+description = "Download engine for OpenDownloader: yt-dlp/ffmpeg orchestration, queue, accounts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+url.workspace = true
+directories.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+futures-util = "0.3"
+tokio-util = "0.7"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+tar = "0.4"
+lzma-rs = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
