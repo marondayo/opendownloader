@@ -3,6 +3,7 @@
 //! OpenDownloader: a free, open-source video & audio downloader.
 
 mod app;
+mod clipboard;
 mod fonts;
 mod items;
 mod platform;

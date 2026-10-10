@@ -52,6 +52,12 @@ pub struct Settings {
     pub notify_download_finished: bool,
     pub notify_conversion_finished: bool,
 
+    // Clipboard
+    /// Offer to download supported links when they are copied.
+    pub monitor_clipboard: bool,
+    /// In Smart Mode, start downloading copied links without asking.
+    pub clipboard_smart_auto: bool,
+
     // Accounts
     pub accounts: BTreeMap<Site, AccountConfig>,
 
@@ -95,6 +101,8 @@ impl Default for Settings {
             bilibili_cdn: crate::bilicdn::AUTO.into(),
             notify_download_finished: true,
             notify_conversion_finished: true,
+            monitor_clipboard: true,
+            clipboard_smart_auto: false,
             accounts: BTreeMap::new(),
             ytdlp_path: None,
             ffmpeg_path: None,

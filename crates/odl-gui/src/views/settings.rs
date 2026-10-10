@@ -199,6 +199,21 @@ impl OdlApp {
             browse_smart = ui.button("Browse…").clicked();
         });
         ui.add_space(10.0);
+        section_title(ui, "Clipboard");
+        changed |= setting_row(
+            ui,
+            "Watch the clipboard for links",
+            Some("When you copy a YouTube, Niconico, Bilibili or SoundCloud link anywhere, offer to download it."),
+            |ui| toggle(ui, &mut s.monitor_clipboard).changed(),
+        );
+        changed |= setting_row(
+            ui,
+            "In Smart Mode, download copied links immediately",
+            Some("No confirmation: copying a link starts the download with the Smart Mode preset."),
+            |ui| toggle(ui, &mut s.clipboard_smart_auto).changed(),
+        );
+
+        ui.add_space(10.0);
         section_title(ui, "Behavior");
         changed |= setting_row(ui, "Ask to confirm quitting while downloads are running", None, |ui| {
             toggle(ui, &mut s.confirm_exit_with_active).changed()

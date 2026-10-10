@@ -226,15 +226,34 @@ impl OdlApp {
     }
 
     fn ui_toasts(&mut self, ctx: &egui::Context) {
-        if self.toasts.is_empty() {
+        if self.toasts.is_empty() && self.clip_offer.is_none() {
             return;
         }
         let mut dismiss = None;
+        let (mut take_offer, mut drop_offer) = (false, false);
         egui::Area::new(Id::new("toasts"))
             .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -40.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
+                if let Some(offer) = &self.clip_offer {
+                    Frame::new()
+                        .fill(SURFACE_HI)
+                        .stroke(Stroke::new(1.0, ACCENT))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(14, 10))
+                        .show(ui, |ui| {
+                            ui.set_width(380.0);
+                            ui.label(RichText::new(format!("📋 {} link copied", offer.link.site.name())).strong());
+                            ui.add(egui::Label::new(RichText::new(&offer.link.url).small().color(TEXT_DIM)).truncate());
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                take_offer = ui.add(primary_button("Download")).clicked();
+                                drop_offer = ui.button("Dismiss").clicked();
+                            });
+                        });
+                    ui.add_space(6.0);
+                }
                 for (i, t) in self.toasts.iter().enumerate() {
                     let color = match t.kind {
                         ToastKind::Info => BORDER,
@@ -259,6 +278,14 @@ impl OdlApp {
             });
         if let Some(i) = dismiss {
             self.toasts.remove(i);
+        }
+        if take_offer {
+            if let Some(offer) = self.clip_offer.take() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.begin_link(&offer.text);
+            }
+        } else if drop_offer {
+            self.clip_offer = None;
         }
     }
 

@@ -13,6 +13,7 @@ use odl_core::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +31,8 @@ pub enum UiMsg {
     CookieFilePicked(Site, PathBuf),
     ToolPathPicked(Tool, PathBuf),
     Bili(BiliMsg),
+    /// A supported link was copied somewhere on the desktop.
+    ClipboardLink(String),
 }
 
 pub enum BiliMsg {
@@ -103,6 +106,12 @@ pub struct ToolState {
     pub version: Option<String>,
     pub busy: Option<String>,
     pub error: Option<String>,
+}
+
+pub struct ClipOffer {
+    pub text: String,
+    pub link: Link,
+    pub at: Instant,
 }
 
 pub enum Confirm {
@@ -180,6 +189,11 @@ pub struct OdlApp {
     pub cookie_checks: HashMap<Site, Result<auth::CookieCheck, String>>,
     /// Removed downloads whose partial files are deleted once their process exits.
     pending_purge: HashMap<ItemId, Vec<PathBuf>>,
+    clipboard_enabled: Arc<AtomicBool>,
+    /// "Link copied, download it?" card.
+    pub clip_offer: Option<ClipOffer>,
+    /// Last text the app itself put on the clipboard (not offered back).
+    pub last_self_copy: Option<String>,
     pub cred_inputs: HashMap<Site, (String, String)>,
     quitting: bool,
 }
@@ -211,6 +225,8 @@ impl OdlApp {
             Arc::new(move |e| sink_bus.send(UiMsg::Engine(e))),
         );
         let items = Items::new(store::load_history());
+        let clipboard_enabled = Arc::new(AtomicBool::new(settings.monitor_clipboard));
+        crate::clipboard::spawn(bus.clone(), clipboard_enabled.clone());
 
         let mut app = Self {
             rt,
@@ -242,6 +258,9 @@ impl OdlApp {
             bili_cancel: None,
             cookie_checks: HashMap::new(),
             pending_purge: HashMap::new(),
+            clipboard_enabled,
+            clip_offer: None,
+            last_self_copy: None,
             cred_inputs: HashMap::new(),
             quitting: false,
         };
@@ -261,6 +280,10 @@ impl OdlApp {
     /// Call after any settings change: persists and applies to the engine.
     pub fn settings_changed(&mut self) {
         self.settings_dirty = true;
+        self.clipboard_enabled.store(self.settings.monitor_clipboard, Ordering::Relaxed);
+        if !self.settings.monitor_clipboard {
+            self.clip_offer = None;
+        }
         self.manager.set_context(Arc::new(self.run_ctx()));
     }
 
@@ -293,6 +316,9 @@ impl OdlApp {
                 self.paste_requested = None;
                 self.toast(ToastKind::Info, "The clipboard doesn't contain a link. Copy one first.");
             }
+        }
+        if self.clip_offer.as_ref().is_some_and(|o| o.at.elapsed() > Duration::from_secs(30)) {
+            self.clip_offer = None;
         }
         let now = Instant::now();
         self.toasts.retain(|t| {
@@ -441,6 +467,7 @@ impl OdlApp {
                 self.reresolve_tools();
             }
             UiMsg::Bili(m) => self.handle_bili(m),
+            UiMsg::ClipboardLink(text) => self.handle_clipboard_link(text),
         }
     }
 
@@ -575,11 +602,42 @@ impl OdlApp {
         }
     }
 
+    fn handle_clipboard_link(&mut self, text: String) {
+        if !self.settings.monitor_clipboard || self.last_self_copy.as_deref() == Some(text.trim()) {
+            return;
+        }
+        let Ok(link) = parse_link(&text) else { return };
+        // Already downloading/downloaded? Don't nag.
+        let key = link.video_only_url();
+        let known = self
+            .items
+            .iter()
+            .any(|i| !i.url.is_empty() && (i.url == link.url || parse_link(&i.url).is_ok_and(|l| l.video_only_url() == key)));
+        if known {
+            return;
+        }
+        if self.settings.smart_mode && self.settings.clipboard_smart_auto && self.add.is_none() {
+            self.begin_link(&text);
+            return;
+        }
+        self.bus.ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+            egui::UserAttentionType::Informational,
+        ));
+        self.clip_offer = Some(ClipOffer { text, link, at: Instant::now() });
+    }
+
+    /// Copies text to the clipboard without the clipboard watcher offering it back.
+    pub fn copy_text(&mut self, ctx: &egui::Context, text: String) {
+        self.last_self_copy = Some(text.trim().to_string());
+        ctx.copy_text(text);
+    }
+
     // -----------------------------------------------------------------------
     // Adding links
 
     /// Entry point for pasted text / the Paste Link button.
     pub fn begin_link(&mut self, text: &str) {
+        self.clip_offer = None;
         let link = match parse_link(text) {
             Ok(l) => l,
             Err(e) => {
@@ -932,8 +990,8 @@ impl OdlApp {
                     }
                 }
                 Action::CopyLink(id) => {
-                    if let Some(i) = self.items.get(id) {
-                        ctx.copy_text(i.url.clone());
+                    if let Some(url) = self.items.get(id).map(|i| i.url.clone()) {
+                        self.copy_text(ctx, url);
                         self.toast(ToastKind::Info, "Link copied");
                     }
                 }
@@ -1273,7 +1331,7 @@ impl eframe::App for OdlApp {
         if self.items.any_active() {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
-        if !self.toasts.is_empty() || self.paste_requested.is_some() {
+        if !self.toasts.is_empty() || self.paste_requested.is_some() || self.clip_offer.is_some() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
