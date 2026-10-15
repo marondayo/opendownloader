@@ -65,6 +65,36 @@ pub fn common_args(ctx: &RunCtx) -> Vec<String> {
     args
 }
 
+/// Extra options for YouTube extraction, given the installed PO-token provider (if usable).
+///
+/// yt-dlp asks every listed client and merges their formats. `default` keeps yt-dlp's own,
+/// maintained choice; `web_embedded` (the embed player) still serves full formats when the
+/// default clients get "confirm you're not a bot". `mweb` needs a PO token, so it is only
+/// added with the provider, and it covers videos whose embedding is disabled.
+pub fn youtube_args(pot: Option<&crate::pot::PotProvider>) -> Vec<String> {
+    let mut args = Vec::new();
+    let clients = match pot {
+        Some(p) => {
+            args.extend(p.ytdlp_args());
+            "default,web_embedded,mweb"
+        }
+        None => "default,web_embedded",
+    };
+    args.push("--extractor-args".into());
+    args.push(format!("youtube:player_client={clients}"));
+    args
+}
+
+/// [`youtube_args`] for YouTube links, nothing for other sites.
+fn site_args(ctx: &RunCtx, site: Site) -> Vec<String> {
+    if site != Site::YouTube {
+        return Vec::new();
+    }
+    // The provider's script runs on Deno.
+    let pot = ctx.tools.deno.as_ref().and_then(|_| crate::pot::installed());
+    youtube_args(pot.as_ref())
+}
+
 // ---------------------------------------------------------------------------
 // Probing
 
@@ -72,7 +102,8 @@ pub fn common_args(ctx: &RunCtx) -> Vec<String> {
 pub async fn probe(ctx: &RunCtx, url: &str, site: Site, no_playlist: bool) -> anyhow::Result<ProbeResult> {
     let mut cmd = base_command(ctx)?;
     let auth = AuthArgs::prepare(site, &ctx.settings.account(site), &run_tag())?;
-    cmd.args(["-J", "--flat-playlist", "--no-warnings"])
+    cmd.args(site_args(ctx, site))
+        .args(["-J", "--flat-playlist", "--no-warnings"])
         .arg(if no_playlist { "--no-playlist" } else { "--yes-playlist" })
         .args(&auth.args)
         .arg("--")
@@ -822,7 +853,8 @@ pub async fn download(
     }
 
     let mut cmd = base_command(ctx)?;
-    cmd.args(download_args(&ctx.settings, job)).args(&auth.args);
+    // Before `download_args`, so a player_client in the user's extra arguments wins.
+    cmd.args(site_args(ctx, job.site)).args(download_args(&ctx.settings, job)).args(&auth.args);
     match &info_file {
         Some(f) => cmd.arg("--load-info-json").arg(&f.0),
         None => cmd.arg("--").arg(&job.url),
@@ -1236,5 +1268,19 @@ mod tests {
         let msg = friendly_error(&lines, Site::YouTube);
         assert!(msg.starts_with("[youtube] abc: Sign in"));
         assert!(msg.contains("Settings → Accounts"));
+    }
+
+    #[test]
+    fn youtube_client_list() {
+        let plain = youtube_args(None);
+        assert_eq!(plain, vec!["--extractor-args", "youtube:player_client=default,web_embedded"]);
+
+        let pot = crate::pot::PotProvider {
+            plugins_dir: PathBuf::from("/d/bgutil/plugins"),
+            server_dir: PathBuf::from("/d/bgutil/server"),
+        };
+        let with_pot = youtube_args(Some(&pot));
+        assert!(has_pair(&with_pot, "--plugin-dirs", "/d/bgutil/plugins"));
+        assert!(has_pair(&with_pot, "--extractor-args", "youtube:player_client=default,web_embedded,mweb"));
     }
 }

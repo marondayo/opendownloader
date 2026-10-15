@@ -139,7 +139,7 @@ pub async fn version(tool: Tool, path: &Path) -> anyhow::Result<String> {
     })
 }
 
-fn http() -> anyhow::Result<reqwest::Client> {
+pub(crate) fn http() -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!("OpenDownloader/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(20))
@@ -212,9 +212,15 @@ fn asset(tool: Tool) -> anyhow::Result<(String, Archive)> {
 pub enum InstallProgress {
     Downloading { downloaded: u64, total: Option<u64> },
     Extracting,
+    /// Installing dependencies (PO-token provider).
+    Installing,
 }
 
-async fn download_file(url: &str, dest: &Path, progress: &(dyn Fn(InstallProgress) + Send + Sync)) -> anyhow::Result<()> {
+pub(crate) async fn download_file(
+    url: &str,
+    dest: &Path,
+    progress: &(dyn Fn(InstallProgress) + Send + Sync),
+) -> anyhow::Result<()> {
     let resp = http()?.get(url).send().await?.error_for_status()?;
     let total = resp.content_length();
     let mut file = tokio::fs::File::create(dest).await.with_context(|| format!("creating {}", dest.display()))?;

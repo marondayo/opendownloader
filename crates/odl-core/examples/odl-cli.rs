@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo run -p odl-core --example odl-cli -- install            # install yt-dlp/deno/ffmpeg (managed)
+//! cargo run -p odl-core --example odl-cli -- pot [install|remove]     # YouTube PO-token provider
 //! cargo run -p odl-core --example odl-cli -- probe <url>
 //! cargo run -p odl-core --example odl-cli -- get <url> [video|mp3|m4a|ogg] [dir]
 //! ```
@@ -48,6 +49,16 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Some("pot") => match args.get(1).map(String::as_str) {
+            Some("install") => {
+                let deno = tools::resolve_one(Tool::Deno, &settings)
+                    .ok_or_else(|| anyhow::anyhow!("install Deno first"))?;
+                let v = pot::install(&deno.path, |p| eprint!("\r{p:?}          ")).await?;
+                println!("\nPO-token provider {v} installed");
+            }
+            Some("remove") => pot::remove()?,
+            _ => println!("PO-token provider: {}", pot::installed_version().unwrap_or_else(|| "not installed".into())),
+        },
         Some("probe") => {
             let link = parse_link(args.get(1).map(String::as_str).unwrap_or(""))?;
             println!("{link:?}");

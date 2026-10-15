@@ -14,6 +14,7 @@ pub mod disk;
 pub mod manager;
 pub mod model;
 pub mod paths;
+pub mod pot;
 pub mod process;
 pub mod settings;
 pub mod site;

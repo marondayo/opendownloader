@@ -687,6 +687,11 @@ impl OdlApp {
             });
             ui.add_space(10.0);
         }
+        card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            self.pot_card(ui);
+        });
+        ui.add_space(10.0);
         changed |= setting_row(
             ui,
             "Keep yt-dlp up to date automatically",
@@ -782,6 +787,53 @@ impl OdlApp {
             }
         });
         changed
+    }
+
+    fn pot_card(&mut self, ui: &mut egui::Ui) {
+        let st = &self.pot_state;
+        let (version, busy, error) = (st.version.clone(), st.busy.clone(), st.error.clone());
+        let has_deno = self.tools.deno.is_some();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("YouTube PO-token provider").size(15.5).strong());
+            match &version {
+                Some(v) => ui.label(RichText::new(format!("✔ {v}")).color(ACCENT_HOVER)),
+                None => ui.label(RichText::new("not installed (optional)").color(TEXT_DIM)),
+            };
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(b) = &busy {
+                    ui.label(RichText::new(b).small().color(TEXT_DIM));
+                    ui.spinner();
+                    return;
+                }
+                match &version {
+                    None => {
+                        if ui.add_enabled(has_deno, primary_button("Install")).clicked() {
+                            self.install_pot();
+                        }
+                    }
+                    Some(_) => {
+                        if ui.button("Remove").clicked() {
+                            self.remove_pot();
+                        }
+                        if ui.add_enabled(has_deno, egui::Button::new("Update")).clicked() {
+                            self.install_pot();
+                        }
+                    }
+                }
+            });
+        });
+        hint(
+            ui,
+            "Lets YouTube's mobile site serve full quality when YouTube asks to \"confirm you're not a bot\" \
+             and the video can't be embedded. Each YouTube video takes a few seconds longer to start. \
+             Uses Deno; about 250 MB.",
+        );
+        if !has_deno && version.is_none() {
+            hint(ui, "Needs Deno (above).");
+        }
+        if let Some(e) = &error {
+            ui.add(egui::Label::new(RichText::new(e).small().color(DANGER)).wrap());
+        }
     }
 }
 

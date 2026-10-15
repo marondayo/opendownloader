@@ -40,6 +40,10 @@ and [FFmpeg](https://ffmpeg.org).
   Download Again, Media Tools ▸ Convert to…, Remove, Delete File, Clear List.
 - **Components manager**: installs and auto-updates private copies of yt-dlp, FFmpeg and Deno
   (the JavaScript runtime yt-dlp uses for YouTube). No root required.
+- **YouTube reliability**: asks the embed player as well as yt-dlp's default clients, so full quality
+  still comes through when YouTube says "confirm you're not a bot". An optional PO-token provider
+  ([bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), Settings → Components) also
+  covers videos that can't be embedded.
 - History is saved; unfinished downloads come back paused and resume where they stopped.
 
 ## Download
@@ -92,6 +96,7 @@ FFmpeg can come from your package manager (`sudo apt install ffmpeg`) or be inst
 ```sh
 cargo run -p odl-core --example odl-cli -- install           # install missing components
 cargo run -p odl-core --example odl-cli -- tools             # show versions
+cargo run -p odl-core --example odl-cli -- pot install       # optional YouTube PO-token provider
 cargo run -p odl-core --example odl-cli -- probe <url>
 cargo run -p odl-core --example odl-cli -- get <url> mp3 ~/Music
 ```

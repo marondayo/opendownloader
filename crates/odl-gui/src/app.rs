@@ -26,6 +26,9 @@ pub enum UiMsg {
     ToolProgress(Tool, InstallProgress),
     ToolInstalled(Tool, Result<String, String>),
     LatestYtdlp(String),
+    PotProgress(InstallProgress),
+    /// PO-token provider installed (`Some(version)`) or removed (`None`).
+    PotDone(Result<Option<String>, String>),
     FolderPicked(PickTarget, PathBuf),
     FilesPicked(Vec<PathBuf>),
     CookieFilePicked(Site, PathBuf),
@@ -168,6 +171,8 @@ pub struct OdlApp {
     pub tools: ToolPaths,
     pub tool_state: HashMap<Tool, ToolState>,
     pub latest_ytdlp: Option<String>,
+    /// YouTube PO-token provider (see `odl_core::pot`).
+    pub pot_state: ToolState,
     pub items: Items,
     history_dirty: bool,
     last_save: Instant,
@@ -251,6 +256,7 @@ impl OdlApp {
             tools,
             tool_state: HashMap::new(),
             latest_ytdlp: None,
+            pot_state: ToolState::default(),
             items,
             history_dirty: false,
             last_save: Instant::now(),
@@ -430,6 +436,7 @@ impl OdlApp {
                     }
                     InstallProgress::Downloading { downloaded, .. } => format!("Downloading… {}", format_bytes(downloaded)),
                     InstallProgress::Extracting => "Extracting…".into(),
+                    InstallProgress::Installing => "Installing…".into(),
                 });
             }
             UiMsg::ToolInstalled(tool, r) => {
@@ -448,6 +455,28 @@ impl OdlApp {
                 self.reresolve_tools();
             }
             UiMsg::LatestYtdlp(v) => self.latest_ytdlp = Some(v),
+            UiMsg::PotProgress(p) => {
+                self.pot_state.busy = Some(match p {
+                    InstallProgress::Downloading { downloaded, .. } => format!("Downloading… {}", format_bytes(downloaded)),
+                    InstallProgress::Extracting => "Extracting…".into(),
+                    InstallProgress::Installing => "Installing dependencies…".into(),
+                });
+            }
+            UiMsg::PotDone(r) => {
+                self.pot_state.busy = None;
+                self.pot_state.version = odl_core::pot::installed_version();
+                match r {
+                    Ok(Some(v)) => {
+                        self.pot_state.error = None;
+                        self.toast(ToastKind::Success, format!("PO-token provider {v} is ready"));
+                    }
+                    Ok(None) => self.pot_state.error = None,
+                    Err(e) => {
+                        self.toast(ToastKind::Error, format!("PO-token provider: {e}"));
+                        self.pot_state.error = Some(e);
+                    }
+                }
+            }
             UiMsg::FolderPicked(target, path) => match target {
                 PickTarget::DialogOutput => {
                     if let Some(AddFlow::Dialog(d)) = &mut self.add {
@@ -1391,6 +1420,7 @@ impl OdlApp {
     // Components
 
     pub fn refresh_tool_versions(&mut self) {
+        self.pot_state.version = odl_core::pot::installed_version();
         for tool in Tool::ALL {
             let Some(resolved) = self.tools.get(tool).cloned() else {
                 self.tool_state.entry(tool).or_default().version = None;
@@ -1429,6 +1459,43 @@ impl OdlApp {
                 self.install_tool(tool);
             }
         }
+    }
+
+    /// Installs (or updates to the latest release) the YouTube PO-token provider.
+    pub fn install_pot(&mut self) {
+        if self.pot_state.busy.is_some() {
+            return;
+        }
+        let Some(deno) = self.tools.deno.clone() else {
+            self.pot_state.error = Some("Install Deno first.".into());
+            return;
+        };
+        self.pot_state.busy = Some("Starting…".into());
+        self.pot_state.error = None;
+        let bus = self.bus.clone();
+        self.rt.spawn(async move {
+            let pbus = bus.clone();
+            let r = odl_core::pot::install(&deno.path, move |p| pbus.send(UiMsg::PotProgress(p)))
+                .await
+                .map(Some)
+                .map_err(|e| format!("{e:#}"));
+            bus.send(UiMsg::PotDone(r));
+        });
+    }
+
+    pub fn remove_pot(&mut self) {
+        if self.pot_state.busy.is_some() {
+            return;
+        }
+        self.pot_state.busy = Some("Removing…".into());
+        let bus = self.bus.clone();
+        self.rt.spawn(async move {
+            let r = tokio::task::spawn_blocking(odl_core::pot::remove)
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| format!("{e:#}")));
+            bus.send(UiMsg::PotDone(r.map(|_| None)));
+        });
     }
 
     pub fn update_ytdlp(&mut self) {
