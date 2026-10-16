@@ -73,6 +73,8 @@ Tick them off per release. "Big video" = anything over ~500 MB (e.g. a long Bili
 
 - [x] Show in Folder (file is selected in the file manager), Open, Open Link in Browser, double-click to open.
 - [x] Desktop notifications (Settings → Notifications → Send a test notification).
+- [ ] Download-finished notification: click it → file selected in the file manager; **Open** plays it;
+      **Show in folder** selects it (GNOME and KDE). Playlist / subscription notifications → **Open folder**.
 - [x] Browse… buttons (file/folder pickers) on GNOME and KDE.
 - [x] Japanese / Chinese / Korean titles render (install `fonts-noto-cjk` if not).
 
@@ -91,7 +93,12 @@ Tick them off per release. "Big video" = anything over ~500 MB (e.g. a long Bili
 - [x] Downloads, conversions, danmaku work; **no console windows flash** when yt-dlp/ffmpeg run.
 - [x] Japanese titles render (Yu Gothic / Meiryo), file names with Japanese characters are fine.
 - [x] Show in Folder opens Explorer with the file selected; free space shows in the status bar.
-- [ ] Known gap: desktop notifications are Linux-only for now.
+- [ ] Settings → Notifications → Send a test notification → toast labelled **OpenDownloader** with the green
+      icon, from the installer build *and* the portable zip.
+- [ ] Download-finished toast: click → Explorer with the file selected; **Open** plays it; **Show in folder**
+      selects it. Playlist / subscription toast → **Open folder**. (Clicks work only while the popup is on
+      screen, not from the notification center.)
+- [ ] Uninstall → `reg query "HKCU\Software\Classes\AppUserModelId\io.github.opendownloader"` finds nothing.
 
 ## 12. Accounts
 
