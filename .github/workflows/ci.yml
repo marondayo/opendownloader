@@ -9,6 +9,8 @@ on:
     paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
     paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  # Manual runs: gh workflow run CI
+  workflow_dispatch:
 
 # A newer push to the same branch cancels the run still in progress.
 concurrency:
