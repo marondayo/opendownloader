@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: marondayo.OpenDownloader
+PackageVersion: 0.1.4
+InstallerLocale: en-US
+MinimumOSVersion: 10.0.0.0
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+InstallerSwitches:
+  Custom: /CURRENTUSER
+UpgradeBehavior: install
+ProductCode: '{6F1C2A43-8E0B-4C55-9B1E-0D9E5A7C2B31}_is1'
+ReleaseDate: 2026-10-16
+AppsAndFeaturesEntries:
+- DisplayName: OpenDownloader 0.1.4
+  Publisher: OpenDownloader contributors
+  ProductCode: '{6F1C2A43-8E0B-4C55-9B1E-0D9E5A7C2B31}_is1'
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/marondayo/opendownloader/releases/download/v0.1.4/OpenDownloader-0.1.4-windows-x64-setup.exe
+  InstallerSha256: 958DA2A37C63BC6EE38A86C2CF8C1EC374022EB244488C7A87747D85B8C0C7F3
+ManifestType: installer
+ManifestVersion: 1.12.0
