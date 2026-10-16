@@ -5,6 +5,7 @@ use crate::theme::*;
 use crate::widgets::{field_label, hint, section_title, setting_row, toggle};
 use eframe::egui::{self, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense};
 use odl_core::auth;
+use odl_core::browser_cookies::{self, Readability};
 use odl_core::settings::{AppUpdates, AuthMethod, Browser, ProxyKind};
 use odl_core::tools::{Tool, ToolSource};
 use odl_core::update::{self, Install};
@@ -525,11 +526,48 @@ impl OdlApp {
                         .add(egui::TextEdit::singleline(&mut acct.browser_profile).hint_text("default").desired_width(150.0))
                         .changed();
                 });
-                hint(ui, &format!(
-                    "Sign in to {} in that browser first. On Linux, Chromium-based browsers may ask for keyring access; \
-                     Firefox works best. Close the browser if its cookie database is locked.",
-                    site.name()
-                ));
+                let (browser, profile) = (acct.browser, acct.browser_profile.clone());
+                if cfg!(windows) && browser != Browser::Firefox {
+                    if changed {
+                        self.browser_checks.remove(&site);
+                    }
+                    let check = *self.browser_checks.entry(site).or_insert_with(|| browser_cookies::check(browser, &profile));
+                    let name = browser.label();
+                    let (text, color) = match check {
+                        Readability::Readable => (format!("✔ {name}'s cookies can be read"), ACCENT_HOVER),
+                        Readability::Locked => (format!("✖ {name} is open and locks its cookies. Downloads continue without signing in."), DANGER),
+                        Readability::AppBound => (
+                            format!("✖ {name} encrypts its cookies in a way yt-dlp can't read on Windows. Use Firefox or a cookies.txt file."),
+                            DANGER,
+                        ),
+                        Readability::NotFound => (format!("⚠ No {name} profile found"), WARN),
+                    };
+                    let mut recheck = false;
+                    ui.horizontal(|ui| {
+                        recheck = ui.button("Check").clicked();
+                        ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+                    });
+                    if recheck {
+                        self.browser_checks.insert(site, browser_cookies::check(browser, &profile));
+                    }
+                    if check != Readability::AppBound {
+                        hint(ui, &format!(
+                            "{name} keeps its cookies locked while it's open, so OpenDownloader can only sign in with them \
+                             while {name} is closed. To stay signed in with {name} open, use a cookies.txt file exported \
+                             from a private window instead."
+                        ));
+                    }
+                    if check != Readability::Readable && ui.button("Use a cookies.txt file instead").clicked() {
+                        self.settings.account_mut(site).method = AuthMethod::CookiesFile;
+                        changed = true;
+                    }
+                } else {
+                    hint(ui, &format!(
+                        "Sign in to {} in that browser first. On Linux, Chromium-based browsers may ask for keyring access; \
+                         Firefox works best. Close the browser if its cookie database is locked.",
+                        site.name()
+                    ));
+                }
             }
             AuthMethod::CookiesFile => {
                 let acct = self.settings.account(site);
@@ -562,7 +600,14 @@ impl OdlApp {
                     }
                     None => {}
                 }
-                hint(ui, "Export a Netscape-format cookies.txt while signed in, e.g. with a “Get cookies.txt LOCALLY” browser extension.");
+                hint(ui, if site == Site::YouTube {
+                    "YouTube rotates the cookies of an open session, so export them from a private window: sign in to \
+                     YouTube in a new private window, open youtube.com/robots.txt in that tab, export the youtube.com \
+                     cookies with a cookies.txt extension (e.g. “Get cookies.txt LOCALLY”), then close the private \
+                     window without signing out."
+                } else {
+                    "Export a Netscape-format cookies.txt while signed in, e.g. with a “Get cookies.txt LOCALLY” browser extension."
+                });
             }
             AuthMethod::Password => changed |= self.password_form(ui, site),
             AuthMethod::QrCode => self.bili_qr_ui(ui),

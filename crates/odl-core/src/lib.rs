@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod bilicdn;
+pub mod browser_cookies;
 pub mod convert;
 pub mod danmaku;
 pub mod disk;

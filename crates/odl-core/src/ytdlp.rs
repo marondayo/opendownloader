@@ -92,7 +92,13 @@ fn site_args(ctx: &RunCtx, site: Site) -> Vec<String> {
     }
     // The provider's script runs on Deno.
     let pot = ctx.tools.deno.as_ref().and_then(|_| crate::pot::installed());
-    youtube_args(pot.as_ref())
+    let mut args = youtube_args(pot.as_ref());
+    // A yt-dlp from PATH (e.g. pip without yt-dlp-ejs) may lack the scripts that solve YouTube's
+    // JavaScript challenges; official builds bundle them, and yt-dlp only fetches when needed.
+    if ctx.tools.ytdlp.as_ref().is_some_and(|t| t.source != ToolSource::Managed) {
+        args.extend(["--remote-components".to_string(), "ejs:github".to_string()]);
+    }
+    args
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +115,12 @@ pub async fn probe(ctx: &RunCtx, url: &str, site: Site, no_playlist: bool) -> an
         .arg("--")
         .arg(url);
     let output = cmd.output().await.context("could not start yt-dlp")?;
+    let signed_out = auth.signed_out.clone();
     drop(auth);
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let lines: Vec<String> = stderr.lines().map(strip_ansi).collect();
-        return Err(anyhow!(friendly_error(&lines, site)));
+        return Err(anyhow!(explain_error(&lines, site, signed_out.as_deref())));
     }
     let json: Value = serde_json::from_slice(&output.stdout).context("yt-dlp returned invalid JSON")?;
     let mut result = parse_probe(&json)?;
@@ -601,6 +608,12 @@ impl ProgressTracker {
 
 /// Turns yt-dlp's stderr into a short, actionable message.
 pub fn friendly_error(stderr_lines: &[String], site: Site) -> String {
+    explain_error(stderr_lines, site, None)
+}
+
+/// [`friendly_error`] for a run that skipped sign-in (`signed_out` says why): a failure that needs
+/// an account then explains the skipped sign-in instead of asking the user to sign in.
+pub fn explain_error(stderr_lines: &[String], site: Site, signed_out: Option<&str>) -> String {
     let error = stderr_lines
         .iter()
         .rev()
@@ -609,7 +622,16 @@ pub fn friendly_error(stderr_lines: &[String], site: Site) -> String {
         .or_else(|| stderr_lines.iter().rev().find(|l| !l.trim().is_empty()).cloned())
         .unwrap_or_else(|| "yt-dlp failed without an error message".into());
     let lower = error.to_lowercase();
-    let hint = if site == Site::Bilibili && lower.contains("412") {
+    let rotated = stderr_lines.iter().any(|l| l.to_lowercase().contains("cookies are no longer valid"));
+    let hint = if let Some(reason) = signed_out.filter(|_| needs_account(&lower)) {
+        Some(format!("Tip: this needs a signed-in account, but {reason}. Settings → Accounts shows how to fix it."))
+    } else if lower.contains("could not copy chrome cookie database") {
+        Some("Tip: the browser is open and locks its cookies. Close it, or use a cookies.txt file (Settings → Accounts).".into())
+    } else if lower.contains("dpapi") || lower.contains("app-bound") {
+        Some("Tip: this browser's cookies can't be read on Windows. Use Firefox or a cookies.txt file (Settings → Accounts).".into())
+    } else if rotated {
+        Some(format!("Tip: your {} cookies have expired. Export them again (Settings → Accounts).", site.name()))
+    } else if site == Site::Bilibili && lower.contains("412") {
         Some(
             "Tip: Bilibili blocks anonymous requests from some networks (HTTP 412). \
              Sign in with the QR code in Settings → Accounts."
@@ -639,6 +661,22 @@ pub fn friendly_error(stderr_lines: &[String], site: Site) -> String {
         Some(h) => format!("{error}\n{h}"),
         None => error,
     }
+}
+
+/// Whether a yt-dlp error means the video needs a signed-in account.
+fn needs_account(lower: &str) -> bool {
+    [
+        "sign in",
+        "login required",
+        "members-only",
+        "join this channel",
+        "private video",
+        "age-restricted",
+        "confirm your age",
+        "inappropriate for some users",
+    ]
+    .iter()
+    .any(|k| lower.contains(k))
 }
 
 // ---------------------------------------------------------------------------
@@ -976,7 +1014,7 @@ pub async fn download(
     drop(info_file);
 
     if !status.success() {
-        return Err(JobError::Failed(friendly_error(&stderr_lines, job.site)));
+        return Err(JobError::Failed(explain_error(&stderr_lines, job.site, auth.signed_out.as_deref())));
     }
     if stderr_lines.iter().any(|l| l.contains("has already been recorded in the archive")) {
         already_downloaded = true;
@@ -1009,6 +1047,7 @@ pub async fn download(
             Err(e) => format!("Comments not saved: {e:#}"),
         });
     }
+    let signed_out_note = auth.signed_out.as_ref().map(|r| format!("Downloaded without signing in: {r}"));
     drop(auth);
 
     let size = match &final_path {
@@ -1022,7 +1061,7 @@ pub async fn download(
         fps: file.as_ref().and_then(|f| f.fps),
         note: match (&file, already_downloaded) {
             (None, true) => Some("Already downloaded earlier (skipped)".into()),
-            _ => comments_note,
+            _ => [signed_out_note, comments_note].into_iter().flatten().reduce(|a, b| format!("{a} · {b}")),
         },
         file: final_path,
     })
@@ -1271,6 +1310,30 @@ mod tests {
     }
 
     #[test]
+    fn explains_skipped_sign_in_only_when_an_account_is_needed() {
+        let members = vec!["ERROR: [youtube] abc: Join this channel to get access to members-only content".to_string()];
+        let msg = explain_error(&members, Site::YouTube, Some("Vivaldi is open and locks its cookies"));
+        assert!(msg.contains("needs a signed-in account, but Vivaldi is open"), "{msg}");
+        assert!(friendly_error(&members, Site::YouTube).contains("Tip: sign in to YouTube"));
+        let forbidden = vec!["ERROR: unable to download video data: HTTP Error 403: Forbidden".to_string()];
+        assert!(!explain_error(&forbidden, Site::YouTube, Some("x")).contains("signed-in account"));
+    }
+
+    #[test]
+    fn cookie_read_errors_get_their_own_tips() {
+        let locked = vec!["ERROR: Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info".to_string()];
+        let msg = friendly_error(&locked, Site::YouTube);
+        assert!(msg.contains("cookies.txt") && !msg.contains("disable-features") && !msg.contains("Tip: sign in"), "{msg}");
+        let dpapi = vec!["ERROR: Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927".to_string()];
+        assert!(friendly_error(&dpapi, Site::YouTube).contains("Use Firefox or a cookies.txt file"));
+        let rotated = vec![
+            "WARNING: [youtube] The provided YouTube account cookies are no longer valid. They have likely been rotated in the browser as a security measure.".to_string(),
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot".to_string(),
+        ];
+        assert!(friendly_error(&rotated, Site::YouTube).contains("Export them again"));
+    }
+
+    #[test]
     fn youtube_client_list() {
         let plain = youtube_args(None);
         assert_eq!(plain, vec!["--extractor-args", "youtube:player_client=default,web_embedded"]);
@@ -1282,5 +1345,21 @@ mod tests {
         let with_pot = youtube_args(Some(&pot));
         assert!(has_pair(&with_pot, "--plugin-dirs", "/d/bgutil/plugins"));
         assert!(has_pair(&with_pot, "--extractor-args", "youtube:player_client=default,web_embedded,mweb"));
+    }
+
+    #[test]
+    fn ytdlp_from_path_may_fetch_challenge_scripts() {
+        let ctx_with = |source| RunCtx {
+            settings: Settings::default(),
+            tools: crate::tools::ToolPaths {
+                ytdlp: Some(crate::tools::ResolvedTool { path: PathBuf::from("yt-dlp"), source }),
+                ..Default::default()
+            },
+        };
+        let system = site_args(&ctx_with(ToolSource::System), Site::YouTube);
+        assert!(has_pair(&system, "--remote-components", "ejs:github"));
+        let managed = site_args(&ctx_with(ToolSource::Managed), Site::YouTube);
+        assert!(!managed.contains(&"--remote-components".to_string()));
+        assert!(site_args(&ctx_with(ToolSource::System), Site::Niconico).is_empty());
     }
 }
