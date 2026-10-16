@@ -20,6 +20,8 @@ pub const BROWSER_UA: &str =
 pub struct AuthArgs {
     pub args: Vec<String>,
     temp_cookie: Option<PathBuf>,
+    /// Set when sign-in was skipped because the browser's cookies can't be read; says why.
+    pub signed_out: Option<String>,
 }
 
 impl Drop for AuthArgs {
@@ -36,12 +38,18 @@ impl AuthArgs {
         let cookie_source = match account.method {
             AuthMethod::None => return Ok(AuthArgs::default()),
             AuthMethod::Browser => {
+                if let Some(reason) =
+                    crate::browser_cookies::check(account.browser, &account.browser_profile).problem(account.browser)
+                {
+                    tracing::info!("{}: continuing without signing in: {reason}", site.name());
+                    return Ok(AuthArgs { args: Vec::new(), temp_cookie: None, signed_out: Some(reason) });
+                }
                 let mut spec = account.browser.ytdlp_name().to_string();
                 if !account.browser_profile.trim().is_empty() {
                     spec.push(':');
                     spec.push_str(account.browser_profile.trim());
                 }
-                return Ok(AuthArgs { args: vec!["--cookies-from-browser".into(), spec], temp_cookie: None });
+                return Ok(AuthArgs { args: vec!["--cookies-from-browser".into(), spec], temp_cookie: None, signed_out: None });
             }
             AuthMethod::Password => {
                 return Ok(AuthArgs {
@@ -51,6 +59,7 @@ impl AuthArgs {
                         paths.netrc_file().to_string_lossy().into_owned(),
                     ],
                     temp_cookie: None,
+                    signed_out: None,
                 });
             }
             AuthMethod::CookiesFile => account
@@ -74,6 +83,7 @@ impl AuthArgs {
         Ok(AuthArgs {
             args: vec!["--cookies".into(), tmp.to_string_lossy().into_owned()],
             temp_cookie: Some(tmp),
+            signed_out: None,
         })
     }
 }
@@ -547,6 +557,15 @@ pub mod bilibili {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::Browser;
+
+    #[test]
+    fn browser_sign_in_passes_cookies_when_readable() {
+        let account = AccountConfig { method: AuthMethod::Browser, browser: Browser::Firefox, ..Default::default() };
+        let auth = AuthArgs::prepare(Site::YouTube, &account, "t").unwrap();
+        assert_eq!(auth.args, vec!["--cookies-from-browser".to_string(), "firefox".to_string()]);
+        assert_eq!(auth.signed_out, None);
+    }
 
     #[test]
     fn netscape_roundtrip() {
