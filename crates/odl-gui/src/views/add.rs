@@ -440,25 +440,8 @@ impl OdlApp {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 field_label(ui, "Subtitles");
-                match single.as_ref().map(|i| i.subtitle_langs.clone()).filter(|l| !l.is_empty()) {
-                    Some(langs) => {
-                        let current = if o.subtitles.is_empty() { "None".to_string() } else { o.subtitles.clone() };
-                        egui::ComboBox::from_id_salt("subs").selected_text(current).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut o.subtitles, String::new(), "None");
-                            ui.selectable_value(&mut o.subtitles, "all".to_string(), "All languages");
-                            for l in langs {
-                                ui.selectable_value(&mut o.subtitles, l.clone(), l);
-                            }
-                        });
-                    }
-                    None => {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut o.subtitles)
-                                .hint_text("none (e.g. en,ja or all)")
-                                .desired_width(200.0),
-                        );
-                    }
-                }
+                let known = single.as_ref().map(|i| i.subtitle_langs.as_slice()).filter(|l| !l.is_empty());
+                subtitle_picker(ui, &mut o.subtitles, known);
             });
             if matches!(site, Site::Bilibili | Site::Niconico) {
                 ui.add_space(4.0);
@@ -525,6 +508,88 @@ fn single_header(ui: &mut egui::Ui, info: &MediaInfo, site: Site) {
             }
         });
     });
+}
+
+/// Offered when the video's own subtitle languages aren't known (several links, playlists).
+const COMMON_SUB_LANGS: &[&str] = &["en", "ja", "zh-Hans", "zh-Hant", "ko", "es", "fr", "de", "pt", "ru"];
+
+/// Multi-select dropdown that edits `subs` as yt-dlp's `--sub-langs` list (`en,ja`, `all`, or empty).
+fn subtitle_picker(ui: &mut egui::Ui, subs: &mut String, known: Option<&[String]>) {
+    let mut picked: Vec<String> = subs.split(',').map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+    let mut all = picked.iter().any(|l| l == "all");
+    let mut langs: Vec<String> = match known {
+        Some(l) => l.to_vec(),
+        None => COMMON_SUB_LANGS.iter().map(|l| l.to_string()).collect(),
+    };
+    // Keep languages saved earlier even when this video doesn't list them.
+    for l in &picked {
+        if l != "all" && !langs.contains(l) {
+            langs.push(l.clone());
+        }
+    }
+    let text = if all {
+        "All languages".to_string()
+    } else if picked.is_empty() {
+        "None".to_string()
+    } else {
+        picked.join(", ")
+    };
+    let mut changed = false;
+    egui::ComboBox::from_id_salt("subs")
+        .width(200.0)
+        .truncate()
+        .selected_text(text)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(picked.is_empty(), "None").clicked() {
+                picked.clear();
+                all = false;
+                changed = true;
+            }
+            changed |= ui.checkbox(&mut all, "All languages").changed();
+            ui.separator();
+            ui.add_enabled_ui(!all, |ui| {
+                for l in &langs {
+                    let mut on = picked.contains(l);
+                    if ui.checkbox(&mut on, l.as_str()).changed() {
+                        if on {
+                            picked.push(l.clone());
+                        } else {
+                            picked.retain(|p| p != l);
+                        }
+                        changed = true;
+                    }
+                }
+                // Codes or yt-dlp patterns that aren't listed (`en.*`, `pt-BR`).
+                ui.separator();
+                let id = ui.make_persistent_id("subs-other");
+                let mut other: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+                ui.horizontal(|ui| {
+                    let edit = ui.add(egui::TextEdit::singleline(&mut other).hint_text("Other (e.g. en.*)").desired_width(120.0));
+                    let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Add").clicked() || entered {
+                        for l in other.split(',').map(str::trim).filter(|l| !l.is_empty() && *l != "all") {
+                            if !langs.iter().any(|x| x == l) {
+                                langs.push(l.to_string());
+                            }
+                            if !picked.iter().any(|x| x == l) {
+                                picked.push(l.to_string());
+                            }
+                            changed = true;
+                        }
+                        other.clear();
+                    }
+                });
+                ui.data_mut(|d| d.insert_temp(id, other));
+            });
+        });
+    if changed {
+        *subs = if all {
+            "all".to_string()
+        } else {
+            langs.iter().filter(|l| picked.contains(l)).cloned().collect::<Vec<_>>().join(",")
+        };
+    }
 }
 
 fn playlist_picker(ui: &mut egui::Ui, pl: &PlaylistInfo, checked: &mut [bool], filter: &mut String) {
