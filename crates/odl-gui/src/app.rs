@@ -241,6 +241,7 @@ pub struct OdlApp {
     pub bili: BiliLogin,
     bili_cancel: Option<CancellationToken>,
     pub cookie_checks: HashMap<Site, Result<auth::CookieCheck, String>>,
+    pub browser_checks: HashMap<Site, odl_core::browser_cookies::Readability>,
     /// Removed downloads whose partial files are deleted once their process exits.
     pending_purge: HashMap<ItemId, Vec<PathBuf>>,
     clipboard_enabled: Arc<AtomicBool>,
@@ -325,6 +326,7 @@ impl OdlApp {
             bili: BiliLogin::Idle,
             bili_cancel: None,
             cookie_checks: HashMap::new(),
+            browser_checks: HashMap::new(),
             pending_purge: HashMap::new(),
             clipboard_enabled,
             clip_offer: None,
@@ -1033,6 +1035,12 @@ impl OdlApp {
         let ctx = self.run_ctx();
         let bus = self.bus.clone();
         let (site, probe_url) = (link.site, url.clone());
+        let acct = self.settings.account(site);
+        if acct.method == AuthMethod::Browser {
+            if let Some(reason) = odl_core::browser_cookies::check(acct.browser, &acct.browser_profile).problem(acct.browser) {
+                self.toast(ToastKind::Info, format!("Not signed in to {}: {reason}. Settings → Accounts shows how to fix it.", site.name()));
+            }
+        }
         self.rt.spawn(async move {
             let result = ytdlp::probe(&ctx, &probe_url, site, no_playlist).await.map_err(|e| format!("{e:#}"));
             bus.send(UiMsg::Probed { req, result });
