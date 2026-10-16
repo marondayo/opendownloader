@@ -471,6 +471,14 @@ fn needs_account(lower: &str) -> bool {
 
 - [ ] **Step 5:** build + test + clippy on Windows and WSL; commit `Settings → Accounts: browser cookie check, unlock-flag steps, private-window export`.
 
+### Task 4b: Deno required, `--remote-components` for yt-dlp from PATH (added at the user's request)
+
+- [ ] Test in `ytdlp.rs`: `site_args` for YouTube with a `System` yt-dlp has `--remote-components ejs:github`; a `Managed` one doesn't; other sites get nothing.
+- [ ] `site_args`: append the flag when `ctx.tools.ytdlp` isn't `ToolSource::Managed`.
+- [ ] `tools.rs`: Deno's `purpose()` ends in "(required)". `app.rs`: `missing_required_tools()` uses `Tool::ALL`.
+- [ ] Remove the Deno hint from Task 4 Step 4.
+- [ ] Test on both platforms; commit.
+
 ---
 
 ### Task 5: Verify

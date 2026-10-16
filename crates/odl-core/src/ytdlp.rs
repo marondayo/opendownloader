@@ -92,7 +92,13 @@ fn site_args(ctx: &RunCtx, site: Site) -> Vec<String> {
     }
     // The provider's script runs on Deno.
     let pot = ctx.tools.deno.as_ref().and_then(|_| crate::pot::installed());
-    youtube_args(pot.as_ref())
+    let mut args = youtube_args(pot.as_ref());
+    // A yt-dlp from PATH (e.g. pip without yt-dlp-ejs) may lack the scripts that solve YouTube's
+    // JavaScript challenges; official builds bundle them, and yt-dlp only fetches when needed.
+    if ctx.tools.ytdlp.as_ref().is_some_and(|t| t.source != ToolSource::Managed) {
+        args.extend(["--remote-components".to_string(), "ejs:github".to_string()]);
+    }
+    args
 }
 
 // ---------------------------------------------------------------------------
@@ -1342,5 +1348,21 @@ mod tests {
         let with_pot = youtube_args(Some(&pot));
         assert!(has_pair(&with_pot, "--plugin-dirs", "/d/bgutil/plugins"));
         assert!(has_pair(&with_pot, "--extractor-args", "youtube:player_client=default,web_embedded,mweb"));
+    }
+
+    #[test]
+    fn ytdlp_from_path_may_fetch_challenge_scripts() {
+        let ctx_with = |source| RunCtx {
+            settings: Settings::default(),
+            tools: crate::tools::ToolPaths {
+                ytdlp: Some(crate::tools::ResolvedTool { path: PathBuf::from("yt-dlp"), source }),
+                ..Default::default()
+            },
+        };
+        let system = site_args(&ctx_with(ToolSource::System), Site::YouTube);
+        assert!(has_pair(&system, "--remote-components", "ejs:github"));
+        let managed = site_args(&ctx_with(ToolSource::Managed), Site::YouTube);
+        assert!(!managed.contains(&"--remote-components".to_string()));
+        assert!(site_args(&ctx_with(ToolSource::System), Site::Niconico).is_empty());
     }
 }

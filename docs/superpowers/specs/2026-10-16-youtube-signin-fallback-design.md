@@ -113,8 +113,18 @@ pub fn check(browser: Browser, profile: &str) -> Readability
 - **cookies.txt file**, YouTube only: the hint becomes the yt-dlp wiki procedure. Sign in in a new
   private window, open `youtube.com/robots.txt` in that tab, export the youtube.com cookies, then close
   the private window without signing out.
-- **Deno hint:** for YouTube with any sign-in method, if Deno isn't found: *"⚠ Signed-in YouTube downloads
-  need Deno. Install it in Settings → Components."*
+- ~~Deno hint~~, replaced by the change below.
+
+### Deno required, pip yt-dlp gets the challenge scripts (added 2026-10-16, at the user's request)
+
+- `missing_required_tools()` checks all of `Tool::ALL`, so the "Install now" banner also appears when only
+  Deno is missing. On the reporter's machine yt-dlp (pip) and FFmpeg (Chocolatey) come from PATH, so the
+  banner never showed and Deno was never installed. Deno's description now says "(required)".
+- For YouTube, when the yt-dlp in use isn't the app-managed build (`ToolSource::System` or `Custom`), runs
+  add `--remote-components ejs:github`. A pip install without `yt-dlp-ejs` lacks the scripts that solve
+  YouTube's JavaScript challenges. yt-dlp then fetches them from GitHub only when needed. Official builds
+  bundle them, so the managed copy doesn't get the flag. The flag exists in the user's yt-dlp 2026.08.19;
+  a yt-dlp older than the flag (late 2025) would reject it.
 
 ## Testing
 

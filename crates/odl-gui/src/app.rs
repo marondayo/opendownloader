@@ -390,7 +390,7 @@ impl OdlApp {
     }
 
     pub fn missing_required_tools(&self) -> Vec<Tool> {
-        [Tool::YtDlp, Tool::Ffmpeg].into_iter().filter(|t| self.tools.get(*t).is_none()).collect()
+        Tool::ALL.into_iter().filter(|t| self.tools.get(*t).is_none()).collect()
     }
 
     // -----------------------------------------------------------------------

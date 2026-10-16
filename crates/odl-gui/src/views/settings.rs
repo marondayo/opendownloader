@@ -620,9 +620,6 @@ impl OdlApp {
             AuthMethod::Password => changed |= self.password_form(ui, site),
             AuthMethod::QrCode => self.bili_qr_ui(ui),
         }
-        if site == Site::YouTube && method != AuthMethod::None && self.tools.deno.is_none() {
-            ui.label(RichText::new("⚠ Signed-in YouTube downloads need Deno. Install it in Settings → Components.").color(WARN));
-        }
         changed
     }
 

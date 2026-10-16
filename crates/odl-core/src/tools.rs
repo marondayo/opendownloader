@@ -33,7 +33,7 @@ impl Tool {
         match self {
             Tool::YtDlp => "Extracts and downloads media from every supported site (required).",
             Tool::Ffmpeg => "Merges video and audio, converts audio and embeds metadata (required).",
-            Tool::Deno => "JavaScript runtime yt-dlp needs to unlock all YouTube formats (recommended).",
+            Tool::Deno => "JavaScript runtime yt-dlp needs for YouTube's challenges, especially when signed in (required).",
         }
     }
 
