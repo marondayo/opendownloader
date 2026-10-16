@@ -49,6 +49,10 @@ Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignor
 Name: "{autoprograms}\OpenDownloader"; Filename: "{app}\opendownloader.exe"
 Name: "{autodesktop}\OpenDownloader"; Filename: "{app}\opendownloader.exe"; Tasks: desktopicon
 
+[Registry]
+; The app writes this key at startup (so the portable zip gets notifications too); remove it on uninstall.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\io.github.opendownloader"; Flags: uninsdeletekey dontcreatekey
+
 [Run]
 Filename: "{app}\opendownloader.exe"; Description: "{cm:LaunchProgram,OpenDownloader}"; Flags: nowait postinstall skipifsilent
 ; In-app updates run Setup with /SILENT; "Restart now" adds /relaunch=1 to start the new version afterwards.
