@@ -2,7 +2,7 @@
 
 mod notification;
 
-pub use notification::{notify, register_notifications};
+pub use notification::{notify, register_notifications, NotifyTarget};
 
 use std::path::{Path, PathBuf};
 

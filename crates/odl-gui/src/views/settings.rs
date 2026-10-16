@@ -428,7 +428,7 @@ impl OdlApp {
         changed |= setting_row(ui, "Show a notification when a download finishes", None, |ui| toggle(ui, &mut s.notify_download_finished).changed());
         changed |= setting_row(ui, "Show a notification when a conversion finishes", None, |ui| toggle(ui, &mut s.notify_conversion_finished).changed());
         if ui.button("Send a test notification").clicked() {
-            crate::platform::notify("OpenDownloader", "Notifications are working.");
+            crate::platform::notify("OpenDownloader", "Notifications are working.", crate::platform::NotifyTarget::None);
         }
         changed
     }

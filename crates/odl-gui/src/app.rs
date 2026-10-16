@@ -648,7 +648,7 @@ impl OdlApp {
                 item.fps = o.fps;
                 item.note = o.note;
                 item.finished_at = Some(chrono::Utc::now());
-                let (title, parent, kind) = (item.title.clone(), item.parent, item.kind);
+                let (title, parent, kind, file) = (item.title.clone(), item.parent, item.kind, item.file_path.clone());
                 if parent.is_none() {
                     let notify = match kind {
                         ItemKind::Conversion => self.settings.notify_conversion_finished,
@@ -656,7 +656,8 @@ impl OdlApp {
                     };
                     if notify {
                         let summary = if kind == ItemKind::Conversion { "Conversion finished" } else { "Download finished" };
-                        platform::notify(summary, &title);
+                        let target = file.map_or(platform::NotifyTarget::None, platform::NotifyTarget::File);
+                        platform::notify(summary, &title, target);
                     }
                     if self.settings.remove_completed {
                         self.items.remove(id);
@@ -688,13 +689,13 @@ impl OdlApp {
             return;
         }
         let Some(group) = self.items.get(gid) else { return };
-        let title = group.title.clone();
+        let (title, dir) = (group.title.clone(), group.output_dir.clone());
         let count = self.items.children_ids(gid).len();
         if self.settings.generate_m3u {
             self.write_m3u(gid);
         }
         if self.settings.notify_download_finished {
-            platform::notify("Playlist downloaded", &format!("{title} ({count} items)"));
+            platform::notify("Playlist downloaded", &format!("{title} ({count} items)"), platform::NotifyTarget::Folder(dir));
         }
         if self.settings.remove_completed {
             self.items.remove(gid);
@@ -950,10 +951,16 @@ impl OdlApp {
                 sub.total_downloaded += count;
                 let (site, options, title) = (sub.site, sub.options.clone(), sub.title.clone());
                 if count > 0 {
+                    // The same folder start_from_probe_ext puts the new downloads in.
+                    let dir = if self.settings.playlist_subdirs {
+                        options.output_dir.join(sanitize_filename(&pl.title))
+                    } else {
+                        options.output_dir.clone()
+                    };
                     self.start_from_probe_ext(&ProbeResult::Playlist(pl), Some(site), Some(&mask), options, false);
                     if self.settings.notify_download_finished {
                         let noun = if count == 1 { "new video" } else { "new videos" };
-                        platform::notify("Subscription", &format!("{count} {noun} from {title}"));
+                        platform::notify("Subscription", &format!("{count} {noun} from {title}"), platform::NotifyTarget::Folder(dir));
                     }
                 }
             }
