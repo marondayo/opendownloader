@@ -1,9 +1,9 @@
 ; Inno Setup script for the OpenDownloader Windows installer.
-; Build: iscc /DAppVersion=0.1.3 packaging\windows\opendownloader.iss
+; Build: iscc /DAppVersion=0.1.4 packaging\windows\opendownloader.iss
 ; Expects target\release\opendownloader.exe; writes dist\OpenDownloader-<version>-windows-x64-setup.exe.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.3"
+  #define AppVersion "0.1.4"
 #endif
 
 [Setup]
