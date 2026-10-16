@@ -29,8 +29,6 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 fontdb = "0.24"
 qrcode = { version = "0.14", default-features = false }
 open = "5"
-
-[target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 
 [dev-dependencies]
