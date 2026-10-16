@@ -143,3 +143,23 @@ pub fn check(browser: Browser, profile: &str) -> Readability
      the note.
   2. After adding the flag and restarting Vivaldi, **Check** shows ✔ and a members-only or age-restricted
      video downloads.
+
+## Revision after user testing (2026-10-16)
+
+- **Option A dropped: the flag no longer works.** In two headless test instances of the user's Vivaldi
+  (Chromium 152), each with its own throwaway profile, `--disable-features=LockProfileCookieDatabase`
+  reached every process, including `network.mojom.NetworkService`. The `Network\Cookies` file was
+  locked with and without it.
+  - `UNLOCK_FLAG`, the flag steps, the Copy button and the flag in error tips are removed.
+  - When cookies are locked or app-bound, Settings now recommends a cookies.txt export from a private
+    window and offers a **"Use a cookies.txt file instead"** button. The user confirmed this works with
+    Vivaldi open.
+  - The cookie-copy error tip says: close the browser, or use a cookies.txt file.
+- **Toasts behind the Add dialog.** The "Not signed in…" toast didn't appear. The toasts area is also
+  where the "link copied" card is drawn. When that area was already on screen, the newly opened dialog
+  was placed above it, hiding toasts. `ui_toasts` now calls `ctx.move_to_top` for its layer every frame.
+- Confirmed working by the user:
+  - fallback downloads with Vivaldi open
+  - the members-only error with and without sign-in
+  - signed-in downloads with Vivaldi closed
+  - cookies.txt from a private window with Vivaldi open

@@ -265,6 +265,9 @@ impl OdlApp {
         let mut dismiss = None;
         let (mut take_offer, mut drop_offer) = (false, false);
         let mut update_action = None;
+        // Above any dialog: a dialog opened from the "link copied" card would otherwise cover the
+        // toasts it triggers (the area was already on screen, so egui keeps the dialog on top).
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, Id::new("toasts")));
         egui::Area::new(Id::new("toasts"))
             .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -40.0))
             .order(egui::Order::Foreground)

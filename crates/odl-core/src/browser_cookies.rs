@@ -1,15 +1,13 @@
 //! Whether yt-dlp can read a browser's cookies right now.
 //!
 //! On Windows, Chromium-based browsers keep their cookie database locked while they run, so
-//! `--cookies-from-browser` fails until the browser is closed or started with [`UNLOCK_FLAG`].
-//! Chrome and Edge 127+ also use app-bound encryption, which yt-dlp can't decrypt at all.
-//! Checking first lets a run continue without signing in instead of failing.
+//! `--cookies-from-browser` fails until the browser is closed. (The old workaround,
+//! `--disable-features=LockProfileCookieDatabase`, no longer unlocks it: tested with Vivaldi on
+//! Chromium 152.) Chrome and Edge 127+ also use app-bound encryption, which yt-dlp can't decrypt
+//! at all. Checking first lets a run continue without signing in instead of failing.
 
 use crate::settings::Browser;
 use std::path::{Path, PathBuf};
-
-/// Browser flag that stops Chromium from locking its cookie database.
-pub const UNLOCK_FLAG: &str = "--disable-features=LockProfileCookieDatabase";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readability {

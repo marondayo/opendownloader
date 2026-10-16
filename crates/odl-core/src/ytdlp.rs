@@ -626,10 +626,7 @@ pub fn explain_error(stderr_lines: &[String], site: Site, signed_out: Option<&st
     let hint = if let Some(reason) = signed_out.filter(|_| needs_account(&lower)) {
         Some(format!("Tip: this needs a signed-in account, but {reason}. Settings → Accounts shows how to fix it."))
     } else if lower.contains("could not copy chrome cookie database") {
-        Some(format!(
-            "Tip: the browser is open and locks its cookies. Close it completely, or start it with {} (Settings → Accounts).",
-            crate::browser_cookies::UNLOCK_FLAG
-        ))
+        Some("Tip: the browser is open and locks its cookies. Close it, or use a cookies.txt file (Settings → Accounts).".into())
     } else if lower.contains("dpapi") || lower.contains("app-bound") {
         Some("Tip: this browser's cookies can't be read on Windows. Use Firefox or a cookies.txt file (Settings → Accounts).".into())
     } else if rotated {
@@ -1326,7 +1323,7 @@ mod tests {
     fn cookie_read_errors_get_their_own_tips() {
         let locked = vec!["ERROR: Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info".to_string()];
         let msg = friendly_error(&locked, Site::YouTube);
-        assert!(msg.contains(crate::browser_cookies::UNLOCK_FLAG) && !msg.contains("Tip: sign in"), "{msg}");
+        assert!(msg.contains("cookies.txt") && !msg.contains("disable-features") && !msg.contains("Tip: sign in"), "{msg}");
         let dpapi = vec!["ERROR: Failed to decrypt with DPAPI. See https://github.com/yt-dlp/yt-dlp/issues/10927".to_string()];
         assert!(friendly_error(&dpapi, Site::YouTube).contains("Use Firefox or a cookies.txt file"));
         let rotated = vec![

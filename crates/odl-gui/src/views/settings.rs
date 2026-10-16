@@ -5,7 +5,7 @@ use crate::theme::*;
 use crate::widgets::{field_label, hint, section_title, setting_row, toggle};
 use eframe::egui::{self, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense};
 use odl_core::auth;
-use odl_core::browser_cookies::{self, Readability, UNLOCK_FLAG};
+use odl_core::browser_cookies::{self, Readability};
 use odl_core::settings::{AppUpdates, AuthMethod, Browser, ProxyKind};
 use odl_core::tools::{Tool, ToolSource};
 use odl_core::update::{self, Install};
@@ -552,22 +552,14 @@ impl OdlApp {
                     }
                     if check != Readability::AppBound {
                         hint(ui, &format!(
-                            "{name} locks its cookies while it's open. To stay signed in with {name} open: close {name}, \
-                             right-click the shortcut you start it from → Properties (taskbar icon: right-click it, then \
-                             right-click {name} → Properties), add the flag below to the end of Target after a space, \
-                             click OK and start {name} again. Then press Check."
+                            "{name} keeps its cookies locked while it's open, so OpenDownloader can only sign in with them \
+                             while {name} is closed. To stay signed in with {name} open, use a cookies.txt file exported \
+                             from a private window instead."
                         ));
-                        let mut copied = false;
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(UNLOCK_FLAG).monospace());
-                            if ui.small_button("Copy").clicked() {
-                                ui.ctx().copy_text(UNLOCK_FLAG.to_string());
-                                copied = true;
-                            }
-                        });
-                        if copied {
-                            self.toast(crate::app::ToastKind::Info, "Flag copied");
-                        }
+                    }
+                    if check != Readability::Readable && ui.button("Use a cookies.txt file instead").clicked() {
+                        self.settings.account_mut(site).method = AuthMethod::CookiesFile;
+                        changed = true;
                     }
                 } else {
                     hint(ui, &format!(
