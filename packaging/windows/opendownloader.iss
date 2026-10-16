@@ -51,6 +51,14 @@ Name: "{autodesktop}\OpenDownloader"; Filename: "{app}\opendownloader.exe"; Task
 
 [Run]
 Filename: "{app}\opendownloader.exe"; Description: "{cm:LaunchProgram,OpenDownloader}"; Flags: nowait postinstall skipifsilent
+; In-app updates run Setup with /SILENT; "Restart now" adds /relaunch=1 to start the new version afterwards.
+Filename: "{app}\opendownloader.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
+
+[Code]
+function RelaunchRequested: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:relaunch|0}') = '1');
+end;
 
 ; Settings, history and the yt-dlp/FFmpeg/Deno copies live in %APPDATA%\OpenDownloader
 ; and are kept on uninstall so a reinstall picks up where you left off.

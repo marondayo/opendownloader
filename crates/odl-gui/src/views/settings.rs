@@ -1,12 +1,13 @@
-//! Settings window: general, downloads, connection, notifications, accounts, components.
+//! Settings window: general, downloads, connection, notifications, accounts, components, updates.
 
-use crate::app::{BiliLogin, OdlApp, PickTarget};
+use crate::app::{BiliLogin, OdlApp, PickTarget, UpdateStatus};
 use crate::theme::*;
 use crate::widgets::{field_label, hint, section_title, setting_row, toggle};
 use eframe::egui::{self, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense};
 use odl_core::auth;
-use odl_core::settings::{AuthMethod, Browser, ProxyKind};
+use odl_core::settings::{AppUpdates, AuthMethod, Browser, ProxyKind};
 use odl_core::tools::{Tool, ToolSource};
+use odl_core::update::{self, Install};
 use odl_core::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,16 +19,18 @@ pub enum SettingsPage {
     Notifications,
     Accounts,
     Components,
+    Updates,
 }
 
 impl SettingsPage {
-    const ALL: [SettingsPage; 6] = [
+    const ALL: [SettingsPage; 7] = [
         SettingsPage::General,
         SettingsPage::Downloads,
         SettingsPage::Connection,
         SettingsPage::Notifications,
         SettingsPage::Accounts,
         SettingsPage::Components,
+        SettingsPage::Updates,
     ];
     fn label(self) -> &'static str {
         match self {
@@ -37,6 +40,7 @@ impl SettingsPage {
             SettingsPage::Notifications => "Notifications",
             SettingsPage::Accounts => "Accounts",
             SettingsPage::Components => "Components",
+            SettingsPage::Updates => "Updates",
         }
     }
 }
@@ -119,6 +123,7 @@ impl OdlApp {
                                     SettingsPage::Notifications => self.page_notifications(ui),
                                     SettingsPage::Accounts => self.page_accounts(ui),
                                     SettingsPage::Components => self.page_components(ui),
+                                    SettingsPage::Updates => self.page_updates(ui),
                                 };
                             });
                         });
@@ -834,6 +839,136 @@ impl OdlApp {
         if let Some(e) = &error {
             ui.add(egui::Label::new(RichText::new(e).small().color(DANGER)).wrap());
         }
+    }
+}
+
+impl OdlApp {
+    fn page_updates(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let (mut check, mut install, mut skip, mut restart) = (false, false, false, false);
+        card_frame().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let u = &self.app_update;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("OpenDownloader {}", update::CURRENT_VERSION)).size(15.5).strong());
+                match &u.status {
+                    UpdateStatus::UpToDate => {
+                        ui.label(RichText::new("✔ Up to date").color(ACCENT_HOVER));
+                    }
+                    UpdateStatus::Available(r) => {
+                        ui.label(RichText::new(format!("Version {} is available", r.version)).color(WARN));
+                    }
+                    UpdateStatus::Ready(r, _) => {
+                        ui.label(RichText::new(format!("✔ Version {} is ready", r.version)).color(ACCENT_HOVER));
+                    }
+                    _ => {}
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &u.status {
+                    UpdateStatus::Checking => {
+                        ui.label(RichText::new("Checking…").small().color(TEXT_DIM));
+                        ui.spinner();
+                    }
+                    UpdateStatus::Downloading(_, progress) => {
+                        ui.label(RichText::new(progress).small().color(TEXT_DIM));
+                        ui.spinner();
+                    }
+                    UpdateStatus::Available(r) => {
+                        let label = if r.installable(&u.install) { "Update now" } else { "Download" };
+                        install = ui.add(primary_button(label)).clicked();
+                        if self.settings.skipped_app_version != r.version {
+                            skip = ui.button("Skip this version").clicked();
+                        }
+                    }
+                    UpdateStatus::Ready(..) => restart = ui.add(primary_button("Restart now")).clicked(),
+                    UpdateStatus::Idle | UpdateStatus::UpToDate => check = ui.button("Check now").clicked(),
+                });
+            });
+            let last = self.settings.last_app_update_check;
+            if let Some(t) = chrono::DateTime::from_timestamp(last, 0).filter(|_| last > 0) {
+                let t = t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+                ui.label(RichText::new(format!("Last checked {t}")).small().color(TEXT_FAINT));
+            }
+            match &u.install {
+                Install::AppImage(p) | Install::Binary(p) => hint(ui, &format!("Updates replace {}.", p.display())),
+                Install::WindowsSetup => {
+                    hint(ui, "Updates run the OpenDownloader installer when you quit or restart. No administrator rights needed.")
+                }
+                Install::Manual(why) => hint(
+                    ui,
+                    &format!("OpenDownloader can't install updates by itself because {why}. New versions are offered for download instead."),
+                ),
+            }
+            if let UpdateStatus::Ready(_, staged) = &u.status {
+                hint(ui, match staged {
+                    update::Staged::Replaced => "The new version starts the next time you open OpenDownloader.",
+                    update::Staged::Setup(_) => "The new version installs when you quit OpenDownloader.",
+                });
+            }
+            if let Some(e) = &u.error {
+                ui.add(egui::Label::new(RichText::new(e).small().color(DANGER)).wrap());
+            }
+            if let Some(r) = u.release().filter(|r| !r.notes.is_empty()) {
+                ui.add_space(6.0);
+                ui.label(RichText::new(format!("What's new in {}", r.version)).strong());
+                egui::ScrollArea::vertical().id_salt("release-notes").max_height(200.0).show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new(&r.notes).color(TEXT_DIM)).wrap());
+                });
+                ui.hyperlink_to("Release page", &r.page);
+            }
+        });
+        ui.add_space(10.0);
+        section_title(ui, "Automatic updates");
+        let s = &mut self.settings;
+        setting_row(ui, "When a new version is released", None, |ui| {
+            egui::ComboBox::from_id_salt("app-updates").selected_text(s.app_updates.label()).width(240.0).show_ui(ui, |ui| {
+                for m in AppUpdates::ALL {
+                    changed |= ui.selectable_value(&mut s.app_updates, m, m.label()).changed();
+                }
+            });
+        });
+        hint(ui, match s.app_updates {
+            AppUpdates::Off => "OpenDownloader only checks when you click Check now or Help → Check for Updates.",
+            AppUpdates::Notify => "Checks once a day and asks before updating.",
+            AppUpdates::Install => "Checks once a day and installs new versions in the background; they take effect after a restart.",
+        });
+        let mut recheck = false;
+        let prereleases = setting_row(
+            ui,
+            "Include pre-releases (beta versions)",
+            Some("Newer features sooner, but they may have more bugs."),
+            |ui| toggle(ui, &mut s.app_update_prereleases).changed(),
+        );
+        if prereleases {
+            changed = true;
+            recheck = true;
+        }
+        if !s.skipped_app_version.is_empty() {
+            let mut unskip = false;
+            setting_row(ui, &format!("Skipped version {}", s.skipped_app_version), None, |ui| {
+                unskip = ui.button("Remind me again").clicked();
+            });
+            if unskip {
+                s.skipped_app_version.clear();
+                self.app_update.dismissed = false;
+                changed = true;
+            }
+        }
+        ui.add_space(4.0);
+        hint(ui, "yt-dlp has its own automatic updates under Components.");
+        if check || recheck {
+            self.check_app_update(true);
+        }
+        if install {
+            self.download_app_update();
+        }
+        if skip {
+            self.skip_app_update();
+        }
+        if restart {
+            let ctx = ui.ctx().clone();
+            self.restart_to_update(&ctx, false);
+        }
+        changed
     }
 }
 

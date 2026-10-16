@@ -3,6 +3,7 @@
 //! ```text
 //! cargo run -p odl-core --example odl-cli -- install            # install yt-dlp/deno/ffmpeg (managed)
 //! cargo run -p odl-core --example odl-cli -- pot [install|remove]     # YouTube PO-token provider
+//! cargo run -p odl-core --example odl-cli -- update-check [--pre]  # look for a newer OpenDownloader
 //! cargo run -p odl-core --example odl-cli -- probe <url>
 //! cargo run -p odl-core --example odl-cli -- get <url> [video|mp3|m4a|ogg] [dir]
 //! ```
@@ -59,6 +60,15 @@ async fn main() -> anyhow::Result<()> {
             Some("remove") => pot::remove()?,
             _ => println!("PO-token provider: {}", pot::installed_version().unwrap_or_else(|| "not installed".into())),
         },
+        Some("update-check") => {
+            let install = update::Install::detect();
+            let pre = args.get(1).is_some_and(|a| a == "--pre");
+            println!("OpenDownloader {} ({install:?})", update::CURRENT_VERSION);
+            match update::check(&install, pre).await? {
+                Some(r) => println!("newer: {} prerelease={} page={} asset={:?}", r.version, r.prerelease, r.page, r.asset),
+                None => println!("up to date"),
+            }
+        }
         Some("probe") => {
             let link = parse_link(args.get(1).map(String::as_str).unwrap_or(""))?;
             println!("{link:?}");
@@ -136,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        _ => eprintln!("usage: odl-cli install [tool] | tools | probe <url> | get <url> [video|mp3|m4a|ogg|opus|flac|wav][+comments] [dir]"),
+        _ => eprintln!("usage: odl-cli install [tool] | tools | update-check [--pre] | probe <url> | get <url> [video|mp3|m4a|ogg|opus|flac|wav][+comments] [dir]"),
     }
     Ok(())
 }

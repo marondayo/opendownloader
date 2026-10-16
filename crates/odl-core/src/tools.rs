@@ -241,7 +241,7 @@ pub(crate) async fn download_file(
     Ok(())
 }
 
-fn make_executable(path: &Path) -> anyhow::Result<()> {
+pub(crate) fn make_executable(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

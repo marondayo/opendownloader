@@ -6,14 +6,21 @@ pub mod list;
 pub mod settings;
 pub mod subs;
 
-use crate::app::{Action, Confirm, OdlApp, ToastKind};
+use crate::app::{Action, Confirm, OdlApp, ToastKind, UpdateStatus};
 use crate::theme::*;
 use crate::views::settings::{SettingsPage, SettingsView};
 use crate::widgets;
 use eframe::egui::{self, vec2, Align, Align2, CornerRadius, Frame, Id, Layout, Margin, RichText, Stroke};
-use odl_core::format_bytes;
+use odl_core::{format_bytes, update};
 
 pub const REPO_URL: &str = "https://github.com/marondayo/opendownloader";
+
+enum UpdateAction {
+    Update,
+    Later,
+    Skip,
+    Restart,
+}
 
 impl OdlApp {
     pub fn ui_root(&mut self, ui: &mut egui::Ui) {
@@ -39,6 +46,7 @@ impl OdlApp {
         self.ui_convert(&ctx);
         self.ui_confirm(&ctx);
         self.ui_about(&ctx);
+        self.ui_update_prompt(&ctx);
         self.ui_toasts(&ctx);
         self.handle_shortcuts(&ctx);
     }
@@ -49,6 +57,7 @@ impl OdlApp {
             || self.convert_view.is_some()
             || self.confirm.is_some()
             || self.about_open
+            || self.app_update.prompt_visible()
     }
 
     fn ui_menu(&mut self, ui: &mut egui::Ui) {
@@ -109,6 +118,9 @@ impl OdlApp {
                 }
                 if ui.button("Report an Issue").clicked() {
                     crate::platform::open_url(&format!("{REPO_URL}/issues"));
+                }
+                if ui.button("Check for Updates…").clicked() {
+                    self.check_app_update(true);
                 }
                 ui.separator();
                 if ui.button("About OpenDownloader").clicked() {
@@ -189,6 +201,14 @@ impl OdlApp {
                     self.settings_view = Some(SettingsView { page: SettingsPage::Components });
                 }
                 ui.label(RichText::new(format!("OpenDownloader {}", env!("CARGO_PKG_VERSION"))).small().color(TEXT_FAINT));
+                let skipped = &self.settings.skipped_app_version;
+                if let Some(r) = self.app_update.release().filter(|r| r.version != *skipped) {
+                    let text = RichText::new("⬆ Update available").small().color(ACCENT_HOVER);
+                    let r = ui.add(egui::Label::new(text).sense(egui::Sense::click())).on_hover_text(format!("OpenDownloader {}", r.version));
+                    if r.clicked() {
+                        self.settings_view = Some(SettingsView { page: SettingsPage::Updates });
+                    }
+                }
             });
         });
     }
@@ -238,16 +258,22 @@ impl OdlApp {
     }
 
     fn ui_toasts(&mut self, ctx: &egui::Context) {
-        if self.toasts.is_empty() && self.clip_offer.is_none() {
+        let show_update = self.app_update.card_visible();
+        if self.toasts.is_empty() && self.clip_offer.is_none() && !show_update {
             return;
         }
         let mut dismiss = None;
         let (mut take_offer, mut drop_offer) = (false, false);
+        let mut update_action = None;
         egui::Area::new(Id::new("toasts"))
             .anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -40.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
+                if show_update {
+                    update_action = self.update_card(ui);
+                    ui.add_space(6.0);
+                }
                 if let Some(offer) = &self.clip_offer {
                     Frame::new()
                         .fill(SURFACE_HI)
@@ -299,6 +325,58 @@ impl OdlApp {
         } else if drop_offer {
             self.clip_offer = None;
         }
+        match update_action {
+            Some(UpdateAction::Update) => self.download_app_update(),
+            Some(UpdateAction::Later) => self.app_update.dismissed = true,
+            Some(UpdateAction::Skip) => self.skip_app_update(),
+            Some(UpdateAction::Restart) => self.restart_to_update(ctx, false),
+            None => {}
+        }
+    }
+
+    /// Update download progress / "restart to finish" card above the toasts.
+    fn update_card(&self, ui: &mut egui::Ui) -> Option<UpdateAction> {
+        let u = &self.app_update;
+        let mut action = None;
+        Frame::new()
+            .fill(SURFACE_HI)
+            .stroke(Stroke::new(1.0, ACCENT))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(14, 10))
+            .show(ui, |ui| {
+                ui.set_width(380.0);
+                match &u.status {
+                    UpdateStatus::Downloading(r, progress) => {
+                        ui.label(RichText::new(format!("⬆ Updating to OpenDownloader {}", r.version)).strong());
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(RichText::new(progress).small().color(TEXT_DIM));
+                        });
+                        if ui.button("Hide").clicked() {
+                            action = Some(UpdateAction::Later);
+                        }
+                    }
+                    UpdateStatus::Ready(r, staged) => {
+                        ui.label(RichText::new(format!("✔ OpenDownloader {} is ready", r.version)).strong());
+                        let when = match staged {
+                            update::Staged::Replaced => "It starts the next time you open OpenDownloader.",
+                            update::Staged::Setup(_) => "It installs when you quit OpenDownloader.",
+                        };
+                        ui.label(RichText::new(when).small().color(TEXT_DIM));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(primary_button("Restart now")).clicked() {
+                                action = Some(UpdateAction::Restart);
+                            }
+                            if ui.button("Later").clicked() {
+                                action = Some(UpdateAction::Later);
+                            }
+                        });
+                    }
+                    _ => {}
+                }
+            });
+        action
     }
 
     fn ui_confirm(&mut self, ctx: &egui::Context) {
@@ -328,6 +406,11 @@ impl OdlApp {
                 "Downloads in progress",
                 "Quit anyway? Unfinished downloads are paused and can be resumed next time.".to_string(),
                 "Quit",
+            ),
+            Confirm::RestartToUpdate => (
+                "Restart to update?",
+                "Unfinished downloads are paused and can be resumed after the restart.".to_string(),
+                "Restart",
             ),
         };
         let mut result: Option<bool> = None;
@@ -360,7 +443,76 @@ impl OdlApp {
             Some(Confirm::DeletePartial(id)) => self.delete_partial(id),
             Some(Confirm::ClearList) => self.clear_list(),
             Some(Confirm::Quit) => self.quit(ctx),
+            Some(Confirm::RestartToUpdate) => self.restart_to_update(ctx, true),
             None => {}
+        }
+    }
+
+    /// Asks what to do about a new version: update now, remind me later, or skip it.
+    fn ui_update_prompt(&mut self, ctx: &egui::Context) {
+        let others_open = self.add.is_some()
+            || self.settings_view.is_some()
+            || self.convert_view.is_some()
+            || self.confirm.is_some()
+            || self.about_open;
+        if !self.app_update.prompt_visible() || others_open {
+            return;
+        }
+        let UpdateStatus::Available(r) = &self.app_update.status else { return };
+        let install = &self.app_update.install;
+        let mut action = None;
+        let modal = egui::Modal::new(Id::new("update-prompt")).frame(dialog_frame()).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.heading("Update available");
+            ui.add_space(6.0);
+            let beta = if r.prerelease { " (pre-release)" } else { "" };
+            ui.label(format!("OpenDownloader {}{beta} is available. You have {}.", r.version, update::CURRENT_VERSION));
+            if !r.notes.is_empty() {
+                ui.add_space(8.0);
+                card_frame().show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(&r.notes).color(TEXT_DIM)).wrap());
+                    });
+                });
+            }
+            if !r.installable(install) {
+                ui.add_space(6.0);
+                let why = match install {
+                    update::Install::Manual(why) => why.as_str(),
+                    _ => "there is no package for this system",
+                };
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("OpenDownloader can't install it by itself ({why}). Download it from the release page."))
+                            .small()
+                            .color(TEXT_DIM),
+                    )
+                    .wrap(),
+                );
+            }
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let label = if r.installable(install) { "Update Now" } else { "Download" };
+                if ui.add(primary_button(label)).clicked() {
+                    action = Some(UpdateAction::Update);
+                }
+                if ui.button("Remind Me Later").clicked() {
+                    action = Some(UpdateAction::Later);
+                }
+                if ui.button("Skip This Version").on_hover_text("Don't remind me about this version again").clicked() {
+                    action = Some(UpdateAction::Skip);
+                }
+            });
+        });
+        if modal.should_close() && action.is_none() {
+            action = Some(UpdateAction::Later);
+        }
+        match action {
+            Some(UpdateAction::Update) => self.download_app_update(),
+            Some(UpdateAction::Later) => self.app_update.dismissed = true,
+            Some(UpdateAction::Skip) => self.skip_app_update(),
+            _ => {}
         }
     }
 

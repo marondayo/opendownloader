@@ -66,6 +66,10 @@ impl AppPaths {
     pub fn temp_dir(&self) -> PathBuf {
         self.cache.join("tmp")
     }
+    /// Downloaded OpenDownloader updates (cleared on start).
+    pub fn updates_dir(&self) -> PathBuf {
+        self.cache.join("updates")
+    }
 }
 
 /// Default folder for downloads: `~/Downloads/OpenDownloader`.

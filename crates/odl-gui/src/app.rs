@@ -8,7 +8,9 @@ use crate::views::settings::{SettingsPage, SettingsView};
 use eframe::egui;
 use odl_core::auth::{self, bilibili};
 use odl_core::settings::AuthMethod;
+use odl_core::settings::AppUpdates;
 use odl_core::tools::{self, InstallProgress, Tool, ToolSource};
+use odl_core::update;
 use odl_core::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -38,6 +40,48 @@ pub enum UiMsg {
     ClipboardLink(String),
     SubChecked { id: u64, result: Result<ProbeResult, String> },
     Leftovers(Vec<odl_core::disk::Leftover>),
+    AppUpdateChecked { manual: bool, result: Result<Option<update::Release>, String> },
+    AppUpdateProgress(InstallProgress),
+    AppUpdateStaged(Result<update::Staged, String>),
+}
+
+/// OpenDownloader's own update (see `odl_core::update`).
+pub struct AppUpdate {
+    pub install: update::Install,
+    pub status: UpdateStatus,
+    /// Last check or download error.
+    pub error: Option<String>,
+    /// The update dialog or card was closed for this session ("remind me later").
+    pub dismissed: bool,
+}
+
+impl AppUpdate {
+    /// The newer release being offered, downloaded or installed.
+    pub fn release(&self) -> Option<&update::Release> {
+        match &self.status {
+            UpdateStatus::Available(r) | UpdateStatus::Downloading(r, _) | UpdateStatus::Ready(r, _) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// The "update available" dialog is waiting to be answered.
+    pub fn prompt_visible(&self) -> bool {
+        !self.dismissed && matches!(self.status, UpdateStatus::Available(_))
+    }
+
+    /// The download progress / "ready" card is shown.
+    pub fn card_visible(&self) -> bool {
+        !self.dismissed && matches!(self.status, UpdateStatus::Downloading(..) | UpdateStatus::Ready(..))
+    }
+}
+
+pub enum UpdateStatus {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(update::Release),
+    Downloading(update::Release, String),
+    Ready(update::Release, update::Staged),
 }
 
 pub enum BiliMsg {
@@ -126,6 +170,7 @@ pub enum Confirm {
     DeletePartial(ItemId),
     ClearList,
     Quit,
+    RestartToUpdate,
 }
 
 #[derive(Default)]
@@ -214,6 +259,10 @@ pub struct OdlApp {
     free_cache: Option<(Instant, PathBuf, Option<u64>)>,
     pub cred_inputs: HashMap<Site, (String, String)>,
     quitting: bool,
+    pub app_update: AppUpdate,
+    next_app_update_tick: Instant,
+    /// Started while exiting: the update installer, or the updated program (`true` = restart).
+    launch_on_exit: Option<(update::Staged, bool)>,
 }
 
 impl OdlApp {
@@ -290,9 +339,20 @@ impl OdlApp {
             free_cache: None,
             cred_inputs: HashMap::new(),
             quitting: false,
+            app_update: AppUpdate {
+                install: update::Install::detect(),
+                status: UpdateStatus::Idle,
+                error: None,
+                dismissed: false,
+            },
+            next_app_update_tick: Instant::now(),
+            launch_on_exit: None,
         };
+        let install = app.app_update.install.clone();
+        app.rt.spawn_blocking(move || update::cleanup(&install));
         app.refresh_tool_versions();
         app.auto_update_ytdlp();
+        app.tick_app_update();
         // `opendownloader <url>` (e.g. from a browser or the desktop file) opens that link.
         if let Some(arg) = std::env::args().skip(1).find(|a| !a.starts_with('-')) {
             app.begin_link(&arg);
@@ -353,6 +413,7 @@ impl OdlApp {
             now.duration_since(t.created) < Duration::from_secs(ttl)
         });
         self.tick_subscriptions();
+        self.tick_app_update();
         self.autosave(false);
     }
 
@@ -430,14 +491,7 @@ impl OdlApp {
                 }
             }
             UiMsg::ToolProgress(tool, p) => {
-                self.tool_state.entry(tool).or_default().busy = Some(match p {
-                    InstallProgress::Downloading { downloaded, total: Some(t) } if t > 0 => {
-                        format!("Downloading… {:.0}% of {}", downloaded as f64 * 100.0 / t as f64, format_bytes(t))
-                    }
-                    InstallProgress::Downloading { downloaded, .. } => format!("Downloading… {}", format_bytes(downloaded)),
-                    InstallProgress::Extracting => "Extracting…".into(),
-                    InstallProgress::Installing => "Installing…".into(),
-                });
+                self.tool_state.entry(tool).or_default().busy = Some(progress_text(&p));
             }
             UiMsg::ToolInstalled(tool, r) => {
                 let st = self.tool_state.entry(tool).or_default();
@@ -527,6 +581,13 @@ impl OdlApp {
             UiMsg::ClipboardLink(text) => self.handle_clipboard_link(text),
             UiMsg::SubChecked { id, result } => self.handle_sub_checked(id, result),
             UiMsg::Leftovers(found) => self.leftovers = Some(found),
+            UiMsg::AppUpdateChecked { manual, result } => self.handle_app_update_checked(manual, result),
+            UiMsg::AppUpdateProgress(p) => {
+                if let UpdateStatus::Downloading(_, text) = &mut self.app_update.status {
+                    *text = progress_text(&p);
+                }
+            }
+            UiMsg::AppUpdateStaged(r) => self.handle_app_update_staged(r),
         }
     }
 
@@ -1551,6 +1612,146 @@ impl OdlApp {
     }
 
     // -----------------------------------------------------------------------
+    // OpenDownloader updates
+
+    /// Looks for a new OpenDownloader release. `manual`: the user asked, so "up to date" is reported too.
+    pub fn check_app_update(&mut self, manual: bool) {
+        match self.app_update.status {
+            UpdateStatus::Checking | UpdateStatus::Downloading(..) => return,
+            UpdateStatus::Ready(..) => {
+                self.app_update.dismissed = false;
+                return;
+            }
+            _ => {}
+        }
+        self.app_update.status = UpdateStatus::Checking;
+        self.app_update.error = None;
+        if manual && self.settings_view.is_none() {
+            self.toast(ToastKind::Info, "Checking for updates…");
+        }
+        self.settings.last_app_update_check = chrono::Utc::now().timestamp();
+        self.settings_dirty = true;
+        let (install, prereleases) = (self.app_update.install.clone(), self.settings.app_update_prereleases);
+        let bus = self.bus.clone();
+        self.rt.spawn(async move {
+            let result = update::check(&install, prereleases).await.map_err(|e| format!("{e:#}"));
+            bus.send(UiMsg::AppUpdateChecked { manual, result });
+        });
+    }
+
+    /// Checks once a day unless automatic checks are off.
+    fn tick_app_update(&mut self) {
+        let now = Instant::now();
+        if now < self.next_app_update_tick {
+            return;
+        }
+        self.next_app_update_tick = now + Duration::from_secs(600);
+        let due = chrono::Utc::now().timestamp() - self.settings.last_app_update_check >= 24 * 3600;
+        if due && self.settings.app_updates != AppUpdates::Off {
+            self.check_app_update(false);
+        }
+    }
+
+    fn handle_app_update_checked(&mut self, manual: bool, result: Result<Option<update::Release>, String>) {
+        match result {
+            Ok(None) => {
+                self.app_update.status = UpdateStatus::UpToDate;
+                if manual {
+                    self.toast(ToastKind::Success, format!("OpenDownloader {} is the latest version", update::CURRENT_VERSION));
+                }
+            }
+            Ok(Some(release)) => {
+                // Automatic checks stay quiet about a version the user skipped.
+                let skipped = !manual && release.version == self.settings.skipped_app_version;
+                let auto = !manual
+                    && !skipped
+                    && self.settings.app_updates == AppUpdates::Install
+                    && release.installable(&self.app_update.install);
+                // Checked from the Updates settings page: the page itself offers the update.
+                self.app_update.dismissed = skipped || (manual && self.settings_view.is_some());
+                self.app_update.status = UpdateStatus::Available(release);
+                if auto {
+                    self.download_app_update();
+                }
+            }
+            Err(e) => {
+                tracing::info!("OpenDownloader update check failed: {e}");
+                self.app_update.status = UpdateStatus::Idle;
+                if manual {
+                    self.toast(ToastKind::Error, format!("Couldn't check for updates: {e}"));
+                }
+                self.app_update.error = Some(e);
+            }
+        }
+    }
+
+    /// Downloads and installs the available update, or opens its page when it can't be installed here.
+    pub fn download_app_update(&mut self) {
+        let UpdateStatus::Available(release) = &self.app_update.status else { return };
+        let release = release.clone();
+        if !release.installable(&self.app_update.install) {
+            platform::open_url(&release.page);
+            self.app_update.dismissed = true;
+            return;
+        }
+        self.app_update.status = UpdateStatus::Downloading(release.clone(), "Starting…".into());
+        self.app_update.error = None;
+        let install = self.app_update.install.clone();
+        let bus = self.bus.clone();
+        self.rt.spawn(async move {
+            let pbus = bus.clone();
+            let r = update::download(&install, &release, move |p| pbus.send(UiMsg::AppUpdateProgress(p)))
+                .await
+                .map_err(|e| format!("{e:#}"));
+            bus.send(UiMsg::AppUpdateStaged(r));
+        });
+    }
+
+    fn handle_app_update_staged(&mut self, r: Result<update::Staged, String>) {
+        let status = std::mem::replace(&mut self.app_update.status, UpdateStatus::Idle);
+        let UpdateStatus::Downloading(release, _) = status else {
+            self.app_update.status = status;
+            return;
+        };
+        match r {
+            Ok(staged) => {
+                if let update::Staged::Setup(_) = &staged {
+                    // Installs when OpenDownloader is closed, unless the user restarts first.
+                    self.launch_on_exit = Some((staged.clone(), false));
+                }
+                self.app_update.status = UpdateStatus::Ready(release, staged);
+                self.app_update.dismissed = false;
+            }
+            Err(e) => {
+                self.toast(ToastKind::Error, format!("Update failed: {e}"));
+                self.app_update.error = Some(e);
+                self.app_update.status = UpdateStatus::Available(release);
+            }
+        }
+    }
+
+    /// Quits and starts the new version (asks first while downloads are running).
+    pub fn restart_to_update(&mut self, ctx: &egui::Context, confirmed: bool) {
+        let UpdateStatus::Ready(_, staged) = &self.app_update.status else { return };
+        let staged = staged.clone();
+        if !confirmed && self.settings.confirm_exit_with_active && self.items.any_active() {
+            self.confirm = Some(Confirm::RestartToUpdate);
+            return;
+        }
+        self.launch_on_exit = Some((staged, true));
+        self.quit(ctx);
+    }
+
+    /// No more reminders (or automatic install) for the available version.
+    pub fn skip_app_update(&mut self) {
+        if let UpdateStatus::Available(r) = &self.app_update.status {
+            self.settings.skipped_app_version = r.version.clone();
+            self.app_update.dismissed = true;
+            self.settings_changed();
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Bilibili QR login
 
     pub fn start_bili_login(&mut self) {
@@ -1705,5 +1906,22 @@ impl eframe::App for OdlApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.shutdown();
+        // After saving, so the new version starts from the current settings and list.
+        if let Some((staged, relaunch)) = self.launch_on_exit.take() {
+            if let Err(e) = update::launch(&self.app_update.install, &staged, relaunch) {
+                tracing::error!("installing the update: {e:#}");
+            }
+        }
+    }
+}
+
+fn progress_text(p: &InstallProgress) -> String {
+    match *p {
+        InstallProgress::Downloading { downloaded, total: Some(t) } if t > 0 => {
+            format!("Downloading… {:.0}% of {}", downloaded as f64 * 100.0 / t as f64, format_bytes(t))
+        }
+        InstallProgress::Downloading { downloaded, .. } => format!("Downloading… {}", format_bytes(downloaded)),
+        InstallProgress::Extracting => "Extracting…".into(),
+        InstallProgress::Installing => "Installing…".into(),
     }
 }

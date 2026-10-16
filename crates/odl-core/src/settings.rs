@@ -72,6 +72,15 @@ pub struct Settings {
     pub auto_update_ytdlp: bool,
     /// Unix timestamp of the last automatic yt-dlp update check.
     pub last_update_check: i64,
+
+    // Updates (OpenDownloader itself)
+    pub app_updates: AppUpdates,
+    /// Unix timestamp of the last automatic OpenDownloader update check.
+    pub last_app_update_check: i64,
+    /// A version the user chose to skip: no reminders or automatic install for it.
+    pub skipped_app_version: String,
+    /// Also offer releases marked as pre-releases (beta versions) on GitHub.
+    pub app_update_prereleases: bool,
 }
 
 impl Default for Settings {
@@ -115,6 +124,10 @@ impl Default for Settings {
             deno_path: None,
             auto_update_ytdlp: true,
             last_update_check: 0,
+            app_updates: AppUpdates::default(),
+            last_app_update_check: 0,
+            skipped_app_version: String::new(),
+            app_update_prereleases: false,
         }
     }
 }
@@ -157,6 +170,29 @@ pub fn preset(media: MediaKind) -> DownloadOptions {
             ..Default::default()
         },
         MediaKind::Audio => DownloadOptions { media, audio_format: AudioFormat::Mp3, ..Default::default() },
+    }
+}
+
+/// What OpenDownloader does about new versions of itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AppUpdates {
+    /// Only check when asked (Help, Check for Updates).
+    Off,
+    /// Check once a day and offer the update.
+    #[default]
+    Notify,
+    /// Check once a day, then download and install in the background.
+    Install,
+}
+
+impl AppUpdates {
+    pub const ALL: [AppUpdates; 3] = [AppUpdates::Off, AppUpdates::Notify, AppUpdates::Install];
+    pub fn label(self) -> &'static str {
+        match self {
+            AppUpdates::Off => "Don't check automatically",
+            AppUpdates::Notify => "Check daily and let me know",
+            AppUpdates::Install => "Install updates automatically",
+        }
     }
 }
 

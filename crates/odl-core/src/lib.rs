@@ -20,6 +20,7 @@ pub mod settings;
 pub mod site;
 pub mod store;
 pub mod tools;
+pub mod update;
 pub mod ytdlp;
 
 pub use manager::{EngineEvent, Job, JobOutcome, JobSpec, Manager};
