@@ -1,5 +1,9 @@
 //! Desktop integration: opening files/folders/links and notifications.
 
+mod notification;
+
+pub use notification::{notify, register_notifications};
+
 use std::path::{Path, PathBuf};
 
 pub fn open_path(path: &Path) {
@@ -65,25 +69,4 @@ fn explorer_path(path: &Path) -> String {
         Some(rest) => format!(r"\\{rest}"),
         None => s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s),
     }
-}
-
-/// Shows a desktop notification (best effort, never blocks the UI).
-pub fn notify(summary: &str, body: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        let (summary, body) = (summary.to_string(), body.to_string());
-        std::thread::spawn(move || {
-            if let Err(e) = notify_rust::Notification::new()
-                .appname("OpenDownloader")
-                .summary(&summary)
-                .body(&body)
-                .icon("folder-download")
-                .show()
-            {
-                tracing::debug!("notification failed: {e}");
-            }
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    let _ = (summary, body);
 }

@@ -21,6 +21,7 @@ fn main() -> eframe::Result {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,yt-dlp=info".into()),
         )
         .init();
+    platform::register_notifications();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

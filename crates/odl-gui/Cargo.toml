@@ -31,6 +31,9 @@ qrcode = { version = "0.14", default-features = false }
 open = "5"
 notify-rust = "4"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry"] }
+
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 
